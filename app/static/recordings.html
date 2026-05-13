@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recordings - Pi Xone:96 Recorder</title>
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";
+    </script>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body data-page="recordings">
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Saved WAV files</p>
+          <h1>Recordings</h1>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch theme">Light</button>
+      </header>
+      <nav class="tabs" aria-label="Primary">
+        <a href="/">Record</a>
+        <a class="active" href="/recordings">Recordings</a>
+      </nav>
+
+      <section class="panel">
+        <div id="recordings-list" class="recordings-list"></div>
+        <p id="message" class="message" role="status"></p>
+      </section>
+    </main>
+  </body>
+</html>

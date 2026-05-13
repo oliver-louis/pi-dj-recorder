@@ -1,0 +1,20 @@
+[Unit]
+Description=Pi DJ Recorder
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copper
+Group=copper
+WorkingDirectory=/home/copper/pi-dj-recorder
+Environment=PATH=/home/copper/pi-dj-recorder/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PI_RECORDER_RECORDINGS_DIR=/home/copper/mixes
+Environment=PI_RECORDER_MIDI_PORT=16:0
+Environment=PI_RECORDER_ONAIR_THRESHOLD=30
+ExecStart=/home/copper/pi-dj-recorder/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

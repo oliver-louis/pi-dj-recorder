@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pi Xone:96 Recorder</title>
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";
+    </script>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body data-page="dashboard">
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Allen &amp; Heath Xone:96</p>
+          <h1>Pi Recorder</h1>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch theme">Light</button>
+      </header>
+      <nav class="tabs" aria-label="Primary">
+        <a class="active" href="/">Record</a>
+        <a href="/recordings">Recordings</a>
+      </nav>
+
+      <section class="panel recorder-panel">
+        <div class="status-row">
+          <span id="state-dot" class="state-dot"></span>
+          <span id="recording-state">Checking...</span>
+        </div>
+
+        <section class="meters" aria-label="Live stereo meters">
+          <div class="meter-head">
+            <h2>Live meters</h2>
+            <div class="meter-head-controls">
+              <span id="meter-status">Idle</span>
+              <button id="metering-toggle-button" class="metering-toggle" type="button">Meters On</button>
+            </div>
+          </div>
+          <div class="meter-levels">
+            <div class="meter-row">
+              <span class="meter-label">L</span>
+              <div class="meter-track">
+                <span id="meter-left-rms" class="meter-fill meter-rms"></span>
+                <span id="meter-left-peak" class="meter-fill meter-peak"></span>
+              </div>
+              <span id="meter-left-value" class="meter-value">-inf</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-label">R</span>
+              <div class="meter-track">
+                <span id="meter-right-rms" class="meter-fill meter-rms"></span>
+                <span id="meter-right-peak" class="meter-fill meter-peak"></span>
+              </div>
+              <span id="meter-right-value" class="meter-value">-inf</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="on-air" aria-label="On air channels">
+          <div class="on-air-head">
+            <h2>On air</h2>
+            <span id="midi-daemon-status" class="midi-daemon-status">MIDI offline</span>
+          </div>
+          <div class="on-air-grid">
+            <div id="on-air-CH1" class="on-air-chip"><span>CH1</span><span class="on-air-state">Off</span></div>
+            <div id="on-air-CH2" class="on-air-chip"><span>CH2</span><span class="on-air-state">Off</span></div>
+            <div id="on-air-CH3" class="on-air-chip"><span>CH3</span><span class="on-air-state">Off</span></div>
+            <div id="on-air-CH4" class="on-air-chip"><span>CH4</span><span class="on-air-state">Off</span></div>
+          </div>
+        </section>
+
+        <dl class="metrics">
+          <div class="metric-primary">
+            <dt>Elapsed</dt>
+            <dd id="elapsed-time">00:00:00</dd>
+          </div>
+          <div class="metric-normal">
+            <dt>Mixer</dt>
+            <dd id="device-state">Checking...</dd>
+          </div>
+          <div class="metric-normal">
+            <dt>Size</dt>
+            <dd id="file-size">0 B</dd>
+          </div>
+          <div class="metric-subtle">
+            <dt>File</dt>
+            <dd id="current-filename">-</dd>
+          </div>
+          <div class="metric-subtle">
+            <dt>PID</dt>
+            <dd id="process-pid">-</dd>
+          </div>
+        </dl>
+
+        <label class="field">
+          <span>Mix name</span>
+          <input id="mix-name" type="text" maxlength="120" autocomplete="off">
+        </label>
+
+        <div class="actions">
+          <button id="start-button" class="primary" type="button">Start Recording</button>
+          <button id="stop-button" class="danger" type="button">Stop Recording</button>
+          <button id="stop-discard-button" class="secondary" type="button">Stop Without Saving</button>
+        </div>
+        <p id="device-message" class="device-message" role="status"></p>
+        <p id="message" class="message" role="status"></p>
+      </section>
+    </main>
+
+    <div id="discard-modal" class="modal" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="discard-title">
+        <h2 id="discard-title">Stop Without Saving?</h2>
+        <p>This will stop recording and permanently delete the current file.</p>
+        <div class="modal-actions">
+          <button id="discard-cancel" class="secondary" type="button">Cancel</button>
+          <button id="discard-confirm" class="danger" type="button" disabled>Confirm (3)</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
