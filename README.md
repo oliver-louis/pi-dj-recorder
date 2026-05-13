@@ -92,7 +92,7 @@ Clone the repo:
 
 ```bash
 cd /home/copper
-git clone https://github.com/YOUR_USERNAME/pi-dj-recorder.git
+git clone https://github.com/oliver-louis/pi-dj-recorder.git
 cd pi-dj-recorder
 ```
 
