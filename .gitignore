@@ -11,3 +11,4 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+AI_PROJECT_SUMMARY.md
