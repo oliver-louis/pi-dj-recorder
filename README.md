@@ -226,5 +226,4 @@ uvicorn app.main:app --reload
 - Authentication for non-trusted networks
 
 ## License
-
-No license has been added yet. If you plan to make this public for reuse, add one before publishing.
+Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
