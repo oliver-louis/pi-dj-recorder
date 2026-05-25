@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Settings - Pi Xone:96 Recorder</title>
     <script>
-      document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";
+      document.documentElement.dataset.theme = localStorage.getItem("theme-cache") || "dark";
     </script>
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="stylesheet" href="/static/styles.css">
@@ -35,25 +35,97 @@
       <section class="panel settings-panel">
         <div class="settings-head">
           <div>
-            <h2>Capture devices</h2>
-            <p class="settings-copy">Choose which MIDI source drives on-air tracking and which ALSA input FFmpeg records from.</p>
+            <h2>Settings</h2>
+            <p class="settings-copy">Capture devices, workflow defaults, and a small debug view for keeping the recorder predictable.</p>
           </div>
           <span id="settings-editability" class="settings-status">Checking…</span>
         </div>
 
         <div id="settings-warning" class="device-message" role="status"></div>
 
-        <div class="settings-grid">
-          <label class="field">
-            <span>MIDI input</span>
-            <select id="settings-midi-port"></select>
-          </label>
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Capture devices</h3>
+            <p>Choose which MIDI source drives on-air tracking and which ALSA input FFmpeg records from.</p>
+          </div>
+          <div class="settings-grid">
+            <label class="field">
+              <span>MIDI input</span>
+              <select id="settings-midi-port"></select>
+            </label>
 
-          <label class="field">
-            <span>Audio input</span>
-            <select id="settings-audio-device"></select>
+            <label class="field">
+              <span>Audio input</span>
+              <select id="settings-audio-device"></select>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Workflow defaults</h3>
+            <p>Keep common recording behavior aligned with how you usually play.</p>
+          </div>
+          <div class="settings-grid">
+            <label class="field">
+              <span>Default mix prefix</span>
+              <input id="settings-default-mix-prefix" type="text" maxlength="120" placeholder="mix">
+            </label>
+
+            <label class="field">
+              <span>Track ID merge gap (seconds)</span>
+              <input id="settings-track-gap" type="number" min="0" max="30" step="1">
+            </label>
+          </div>
+          <label class="toggle-field">
+            <input id="settings-auto-metering" type="checkbox">
+            <span>Auto-enable metering on the Record page when idle</span>
           </label>
-        </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Safety</h3>
+            <p>Destructive actions can stay cautious without slowing down the rest of the app.</p>
+          </div>
+          <div class="settings-grid">
+            <label class="toggle-field">
+              <input id="settings-confirm-delete" type="checkbox">
+              <span>Confirm before deleting recordings</span>
+            </label>
+
+            <label class="field">
+              <span>Discard countdown (seconds)</span>
+              <input id="settings-discard-countdown" type="number" min="0" max="15" step="1">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Appearance</h3>
+            <p>Theme now lives with the app, so your devices stay in sync.</p>
+          </div>
+          <div class="theme-segmented" role="radiogroup" aria-label="Theme">
+            <label class="theme-option">
+              <input type="radio" name="settings-theme" value="dark">
+              <span>Dark</span>
+            </label>
+            <label class="theme-option">
+              <input type="radio" name="settings-theme" value="light">
+              <span>Light</span>
+            </label>
+          </div>
+        </section>
+
+        <details class="debug-panel">
+          <summary>Advanced / Debug</summary>
+          <div class="debug-panel-head">
+            <p class="settings-copy">Read-only live diagnostics for MIDI, audio, and current recorder state.</p>
+            <button id="settings-refresh-button" class="secondary" type="button">Refresh</button>
+          </div>
+          <div id="settings-debug" class="debug-grid"></div>
+        </details>
 
         <div class="settings-actions">
           <button id="settings-save-button" class="primary" type="button">Save Settings</button>

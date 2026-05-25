@@ -1,25 +1,79 @@
 const messageEl = document.getElementById("message");
 const METER_FLOOR_DB = -60;
+const THEME_STORAGE_KEY = "theme-cache";
+const DEFAULT_SETTINGS = {
+  midi_port: "16:0",
+  midi_port_name_hint: "XONE:96",
+  input_device: "plughw:X2,0",
+  default_mix_prefix: "mix",
+  track_id_merge_gap_seconds: 10,
+  auto_enable_metering: false,
+  theme: "dark",
+  confirm_delete_recordings: true,
+  stop_discard_countdown_seconds: 3,
+};
 let waveformObserver = null;
 let activePlayerAudio = null;
 let dashboardMeteringActive = false;
 let settingsSnapshot = null;
+let autoMeteringAttempted = false;
+
+function currentSettings() {
+  return { ...DEFAULT_SETTINGS, ...(settingsSnapshot?.settings || {}) };
+}
+
+function updateThemeControls(theme) {
+  const toggle = document.getElementById("theme-toggle");
+  if (toggle) {
+    toggle.textContent = theme === "dark" ? "Light" : "Dark";
+    toggle.setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} mode`);
+  }
+  document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
+    input.checked = input.value === theme;
+  });
+}
+
+function applyTheme(theme, { persistLocal = true } = {}) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = nextTheme;
+  if (persistLocal) {
+    localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  }
+  updateThemeControls(nextTheme);
+  redrawLoadedWaveforms();
+}
+
+function settingsRequestPayload(overrides = {}) {
+  return {
+    ...currentSettings(),
+    ...overrides,
+  };
+}
+
+async function persistThemePreference(theme) {
+  if (!settingsSnapshot) return;
+  try {
+    const payload = await fetchJson("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settingsRequestPayload({ theme })),
+    });
+    syncSettingsSnapshot(payload);
+  } catch (error) {
+    if (document.body.dataset.page === "settings") {
+      setMessage(error.message, true);
+    }
+  }
+}
 
 function setupThemeToggle() {
   const toggle = document.getElementById("theme-toggle");
   if (!toggle) return;
-
-  const applyTheme = (theme) => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("theme", theme);
-    toggle.textContent = theme === "dark" ? "Light" : "Dark";
-    toggle.setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} mode`);
-    redrawLoadedWaveforms();
-  };
-
-  applyTheme(localStorage.getItem("theme") || "dark");
+  updateThemeControls(document.documentElement.dataset.theme || "dark");
   toggle.addEventListener("click", () => {
-    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+    const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    persistThemePreference(nextTheme);
   });
 }
 
@@ -40,7 +94,7 @@ function setupDefaultMixPlaceholder() {
 function defaultRecordingFilename() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
-  return `mix_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.wav`;
+  return `${currentSettings().default_mix_prefix}_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.wav`;
 }
 
 function setMessage(text, isError = false) {
@@ -77,6 +131,20 @@ async function fetchJson(url, options = {}) {
     throw new Error(data.detail || `Request failed with ${response.status}`);
   }
   return data;
+}
+
+function syncSettingsSnapshot(payload) {
+  settingsSnapshot = payload;
+  applyTheme((payload.settings || {}).theme || "dark");
+  return payload;
+}
+
+async function loadSettingsPayload({ updatePage = false } = {}) {
+  const payload = syncSettingsSnapshot(await fetchJson("/api/settings"));
+  if (updatePage && document.body.dataset.page === "settings") {
+    updateSettingsPage(payload);
+  }
+  return payload;
 }
 
 function updateDashboard(status) {
@@ -229,6 +297,23 @@ async function refreshStatus() {
   try {
     const status = await fetchJson("/api/status");
     updateDashboard(status);
+    return status;
+  } catch (error) {
+    setMessage(error.message, true);
+    return null;
+  }
+}
+
+async function maybeAutoEnableMetering(status) {
+  if (autoMeteringAttempted) return;
+  autoMeteringAttempted = true;
+  const settings = currentSettings();
+  if (!settings.auto_enable_metering) return;
+  if (!status || status.recording || status.metering_active || !status.device_available) return;
+  try {
+    const next = await fetchJson("/api/metering/start", { method: "POST" });
+    updateDashboard(next);
+    setMessage("Live metering enabled.");
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -607,21 +692,22 @@ function setupDiscardModal() {
   if (!trigger || !modal || !cancel || !confirm) return;
 
   let timer = null;
-  let seconds = 3;
+  let seconds = currentSettings().stop_discard_countdown_seconds;
   const close = () => {
     modal.classList.remove("open");
     modal.setAttribute("aria-hidden", "true");
     confirm.disabled = true;
-    confirm.textContent = "Confirm (3)";
+    confirm.textContent = `Confirm (${currentSettings().stop_discard_countdown_seconds})`;
     if (timer) window.clearInterval(timer);
     timer = null;
   };
   const open = () => {
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
-    seconds = 3;
-    confirm.disabled = true;
-    confirm.textContent = `Confirm (${seconds})`;
+    seconds = currentSettings().stop_discard_countdown_seconds;
+    confirm.disabled = seconds > 0;
+    confirm.textContent = seconds > 0 ? `Confirm (${seconds})` : "Confirm";
+    if (seconds <= 0) return;
     timer = window.setInterval(() => {
       seconds -= 1;
       if (seconds <= 0) {
@@ -684,7 +770,7 @@ async function renameRecording(filename, mixName) {
 }
 
 async function deleteRecording(filename) {
-  if (!window.confirm(`Delete ${filename}?`)) return;
+  if (currentSettings().confirm_delete_recordings && !window.confirm(`Delete ${filename}?`)) return;
   try {
     const response = await fetch(`/api/recordings/${encodeURIComponent(filename)}`, { method: "DELETE" });
     if (!response.ok) {
@@ -716,22 +802,56 @@ function buildDeviceOptions(select, devices, currentValue, selectedAvailable) {
 }
 
 function updateSettingsPage(payload) {
-  settingsSnapshot = payload;
+  syncSettingsSnapshot(payload);
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
+  const prefixInput = document.getElementById("settings-default-mix-prefix");
+  const mergeGapInput = document.getElementById("settings-track-gap");
+  const autoMeteringInput = document.getElementById("settings-auto-metering");
+  const confirmDeleteInput = document.getElementById("settings-confirm-delete");
+  const discardCountdownInput = document.getElementById("settings-discard-countdown");
   const saveButton = document.getElementById("settings-save-button");
+  const refreshButton = document.getElementById("settings-refresh-button");
   const status = document.getElementById("settings-editability");
   const warning = document.getElementById("settings-warning");
-  if (!midiSelect || !audioSelect || !saveButton || !status || !warning) return;
+  const debugRoot = document.getElementById("settings-debug");
+  if (
+    !midiSelect ||
+    !audioSelect ||
+    !prefixInput ||
+    !mergeGapInput ||
+    !autoMeteringInput ||
+    !confirmDeleteInput ||
+    !discardCountdownInput ||
+    !saveButton ||
+    !refreshButton ||
+    !status ||
+    !warning
+  ) return;
 
   const settings = payload.settings || {};
   buildDeviceOptions(midiSelect, payload.midi_devices || [], settings.midi_port || "", Boolean(payload.midi_selected_available));
   buildDeviceOptions(audioSelect, payload.audio_devices || [], settings.input_device || "", Boolean(payload.audio_selected_available));
+  prefixInput.value = settings.default_mix_prefix || "mix";
+  mergeGapInput.value = String(settings.track_id_merge_gap_seconds ?? 10);
+  autoMeteringInput.checked = Boolean(settings.auto_enable_metering);
+  confirmDeleteInput.checked = Boolean(settings.confirm_delete_recordings);
+  discardCountdownInput.value = String(settings.stop_discard_countdown_seconds ?? 3);
+  updateThemeControls(settings.theme || "dark");
 
   const editable = Boolean(payload.editable);
   midiSelect.disabled = !editable;
   audioSelect.disabled = !editable;
+  prefixInput.disabled = !editable;
+  mergeGapInput.disabled = !editable;
+  autoMeteringInput.disabled = !editable;
+  confirmDeleteInput.disabled = !editable;
+  discardCountdownInput.disabled = !editable;
+  document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
+    input.disabled = !editable;
+  });
   saveButton.disabled = !editable;
+  refreshButton.disabled = false;
   status.textContent = editable ? "Ready to change" : payload.busy_reason === "recording" ? "Locked while recording" : "Locked while metering";
   status.classList.toggle("online", editable);
   status.classList.toggle("offline", !editable);
@@ -741,11 +861,39 @@ function updateSettingsPage(payload) {
   if (!payload.audio_selected_available) warnings.push("Saved audio device is currently unavailable.");
   warning.textContent = warnings.join(" ");
   warning.classList.toggle("visible", warnings.length > 0);
+
+  if (debugRoot) {
+    const debug = payload.debug || {};
+    debugRoot.innerHTML = "";
+    [
+      ["Selected MIDI", debug.selected_midi_device || "-"],
+      ["Active MIDI port", debug.resolved_midi_port || "-"],
+      ["Selected audio", debug.selected_audio_input || "-"],
+      ["MIDI daemon", debug.midi_online ? "Online" : "Offline"],
+      ["MIDI error", debug.midi_error || "-"],
+      ["Audio device", debug.device_available ? "Available" : "Unavailable"],
+      ["Audio error", debug.device_error || "-"],
+      ["Recording", debug.recording ? "Active" : "Idle"],
+      ["Metering", debug.metering_active ? "Active" : "Idle"],
+      ["Config path", debug.config_path || "-"],
+    ].forEach(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "debug-row";
+      const dt = document.createElement("span");
+      dt.className = "debug-label";
+      dt.textContent = label;
+      const dd = document.createElement("span");
+      dd.className = "debug-value";
+      dd.textContent = value;
+      row.append(dt, dd);
+      debugRoot.append(row);
+    });
+  }
 }
 
 async function loadSettings() {
   try {
-    updateSettingsPage(await fetchJson("/api/settings"));
+    updateSettingsPage(await loadSettingsPayload({ updatePage: false }));
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -754,7 +902,22 @@ async function loadSettings() {
 async function saveSettings() {
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
-  if (!midiSelect || !audioSelect) return;
+  const prefixInput = document.getElementById("settings-default-mix-prefix");
+  const mergeGapInput = document.getElementById("settings-track-gap");
+  const autoMeteringInput = document.getElementById("settings-auto-metering");
+  const confirmDeleteInput = document.getElementById("settings-confirm-delete");
+  const discardCountdownInput = document.getElementById("settings-discard-countdown");
+  const themeInput = document.querySelector('input[name="settings-theme"]:checked');
+  if (
+    !midiSelect ||
+    !audioSelect ||
+    !prefixInput ||
+    !mergeGapInput ||
+    !autoMeteringInput ||
+    !confirmDeleteInput ||
+    !discardCountdownInput ||
+    !themeInput
+  ) return;
   setMessage("Saving settings...");
   try {
     const payload = await fetchJson("/api/settings", {
@@ -763,6 +926,12 @@ async function saveSettings() {
       body: JSON.stringify({
         midi_port: midiSelect.value,
         input_device: audioSelect.value,
+        default_mix_prefix: prefixInput.value.trim(),
+        track_id_merge_gap_seconds: Number(mergeGapInput.value),
+        auto_enable_metering: autoMeteringInput.checked,
+        theme: themeInput.value,
+        confirm_delete_recordings: confirmDeleteInput.checked,
+        stop_discard_countdown_seconds: Number(discardCountdownInput.value),
       }),
     });
     updateSettingsPage(payload);
@@ -781,18 +950,31 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("metering-toggle-button").addEventListener("click", toggleMetering);
     setupDiscardModal();
     setupDefaultMixPlaceholder();
-    refreshStatus();
-    refreshMidiState();
-    window.setInterval(refreshStatus, 1000);
-    connectMeters();
-    connectMidiState();
+    loadSettingsPayload()
+      .catch(() => null)
+      .then(async () => {
+        const status = await refreshStatus();
+        await maybeAutoEnableMetering(status);
+      })
+      .finally(() => {
+        refreshMidiState();
+        window.setInterval(refreshStatus, 1000);
+        connectMeters();
+        connectMidiState();
+      });
   }
   if (page === "recordings") {
-    loadRecordings();
+    loadSettingsPayload().catch(() => null).finally(() => {
+      loadRecordings();
+    });
     // TODO: Add Nextcloud sync status/action controls here when that feature exists.
   }
   if (page === "settings") {
+    document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
+      input.addEventListener("change", () => applyTheme(input.value));
+    });
     document.getElementById("settings-save-button").addEventListener("click", saveSettings);
+    document.getElementById("settings-refresh-button").addEventListener("click", loadSettings);
     loadSettings();
   }
 });

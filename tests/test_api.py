@@ -274,8 +274,15 @@ def test_settings_page_and_endpoint(tmp_path, monkeypatch):
     payload = response.json()
     assert payload["editable"] is True
     assert payload["settings"]["midi_port"] == "16:0"
+    assert payload["settings"]["default_mix_prefix"] == "mix"
+    assert payload["settings"]["track_id_merge_gap_seconds"] == 10.0
+    assert payload["settings"]["auto_enable_metering"] is False
+    assert payload["settings"]["theme"] == "dark"
+    assert payload["settings"]["confirm_delete_recordings"] is True
+    assert payload["settings"]["stop_discard_countdown_seconds"] == 3
     assert payload["midi_devices"][0]["id"] == "24:0"
     assert payload["audio_devices"][0]["id"] == "plughw:2,0"
+    assert payload["debug"]["config_path"]
 
 
 def test_update_settings_endpoint(tmp_path, monkeypatch):
@@ -297,20 +304,46 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     client, original = make_client(tmp_path, monkeypatch)
     try:
-        response = client.put("/api/settings", json={"midi_port": "24:0", "input_device": "plughw:2,0"})
+        response = client.put(
+            "/api/settings",
+            json={
+                "midi_port": "24:0",
+                "input_device": "plughw:2,0",
+                "default_mix_prefix": "vinyl",
+                "track_id_merge_gap_seconds": 5,
+                "auto_enable_metering": True,
+                "theme": "light",
+                "confirm_delete_recordings": False,
+                "stop_discard_countdown_seconds": 1,
+            },
+        )
     finally:
         main.recorder = original
 
     assert response.status_code == 200
     assert response.json()["settings"]["midi_port"] == "24:0"
     assert response.json()["settings"]["input_device"] == "plughw:2,0"
+    assert response.json()["settings"]["default_mix_prefix"] == "vinyl"
+    assert response.json()["settings"]["theme"] == "light"
 
 
 def test_update_settings_rejects_invalid_selection(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
     client, original = make_client(tmp_path, monkeypatch)
     try:
-        response = client.put("/api/settings", json={"midi_port": "99:9", "input_device": "plughw:9,9"})
+        response = client.put(
+            "/api/settings",
+            json={
+                "midi_port": "99:9",
+                "input_device": "plughw:9,9",
+                "default_mix_prefix": "mix",
+                "track_id_merge_gap_seconds": 10,
+                "auto_enable_metering": False,
+                "theme": "dark",
+                "confirm_delete_recordings": True,
+                "stop_discard_countdown_seconds": 3,
+            },
+        )
     finally:
         main.recorder = original
 
@@ -337,11 +370,46 @@ def test_update_settings_rejects_while_busy(tmp_path, monkeypatch):
     client, original = make_client(tmp_path, monkeypatch)
     try:
         client.post("/api/recordings/start")
-        response = client.put("/api/settings", json={"midi_port": "24:0", "input_device": "plughw:2,0"})
+        response = client.put(
+            "/api/settings",
+            json={
+                "midi_port": "24:0",
+                "input_device": "plughw:2,0",
+                "default_mix_prefix": "mix",
+                "track_id_merge_gap_seconds": 10,
+                "auto_enable_metering": False,
+                "theme": "dark",
+                "confirm_delete_recordings": True,
+                "stop_discard_countdown_seconds": 3,
+            },
+        )
     finally:
         main.recorder = original
 
     assert response.status_code == 409
+
+
+def test_update_settings_rejects_invalid_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.put(
+            "/api/settings",
+            json={
+                "midi_port": "16:0",
+                "input_device": "plughw:X2,0",
+                "default_mix_prefix": "",
+                "track_id_merge_gap_seconds": 31,
+                "auto_enable_metering": False,
+                "theme": "violet",
+                "confirm_delete_recordings": True,
+                "stop_discard_countdown_seconds": 16,
+            },
+        )
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 422
 
 
 def test_waveform_endpoint_success(tmp_path, monkeypatch):

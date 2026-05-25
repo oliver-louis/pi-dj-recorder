@@ -39,6 +39,12 @@ class RenameRecordingRequest(BaseModel):
 class UpdateSettingsRequest(BaseModel):
     midi_port: str = Field(min_length=1, max_length=120)
     input_device: str = Field(min_length=1, max_length=240)
+    default_mix_prefix: str = Field(min_length=1, max_length=120)
+    track_id_merge_gap_seconds: float = Field(ge=0, le=30)
+    auto_enable_metering: bool
+    theme: str = Field(pattern="^(dark|light)$")
+    confirm_delete_recordings: bool
+    stop_discard_countdown_seconds: int = Field(ge=0, le=15)
 
 
 @asynccontextmanager
@@ -85,6 +91,12 @@ async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
             recorder.apply_settings,
             midi_port=request.midi_port,
             input_device=request.input_device,
+            default_mix_prefix=request.default_mix_prefix,
+            track_id_merge_gap_seconds=request.track_id_merge_gap_seconds,
+            auto_enable_metering=request.auto_enable_metering,
+            theme=request.theme,
+            confirm_delete_recordings=request.confirm_delete_recordings,
+            stop_discard_countdown_seconds=request.stop_discard_countdown_seconds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

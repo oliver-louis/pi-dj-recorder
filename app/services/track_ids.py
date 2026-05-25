@@ -10,7 +10,7 @@ class TrackIdExporter:
     def __init__(self, store: RecordingsStore) -> None:
         self.store = store
 
-    def export_for_recording(self, filename: str) -> tuple[str, bytes]:
+    def export_for_recording(self, filename: str, *, merge_gap_seconds: float = 10.0) -> tuple[str, bytes]:
         path = self.store.onair_log_path_for_recording(filename)
         try:
             events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -19,7 +19,7 @@ class TrackIdExporter:
         if not events:
             raise TrackIdExportError("On-air log is empty.")
 
-        sessions = self.track_sessions_from_onair_events(events)
+        sessions = self.track_sessions_from_onair_events(events, merge_gap_seconds=merge_gap_seconds)
         export_payload = [
             {
                 "title": self.track_title_for_channel(session["channel"]),
@@ -47,7 +47,12 @@ class TrackIdExporter:
             return f"{hours}:{minutes:02d}:{secs:02d}"
         return f"{minutes}:{secs:02d}"
 
-    def track_sessions_from_onair_events(self, events: list[dict[str, object]]) -> list[dict[str, float | int]]:
+    def track_sessions_from_onair_events(
+        self,
+        events: list[dict[str, object]],
+        *,
+        merge_gap_seconds: float = 10.0,
+    ) -> list[dict[str, float | int]]:
         stop_time = None
         sessions: list[dict[str, float | int]] = []
         state: dict[int, dict[str, float | bool | None]] = {}
@@ -76,7 +81,7 @@ class TrackIdExporter:
                     continue
                 if isinstance(pending_out, (int, float)) and isinstance(channel_state["start"], (int, float)):
                     gap = time_seconds - float(pending_out)
-                    if gap <= 10.0:
+                    if gap <= merge_gap_seconds:
                         channel_state["active"] = True
                         channel_state["pending_out"] = None
                         continue

@@ -134,7 +134,8 @@ a:hover {
 }
 
 .icon-button.active {
-  background: var(--button);
+  border-color: rgba(79, 157, 232, 0.36);
+  background: rgba(79, 157, 232, 0.14);
 }
 
 .icon-button svg {
@@ -298,6 +299,31 @@ select:focus {
   gap: 18px;
 }
 
+.settings-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.settings-section-head {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.settings-section-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .settings-head {
   display: flex;
   align-items: start;
@@ -326,6 +352,107 @@ select:focus {
 .settings-actions {
   display: flex;
   justify-content: flex-start;
+}
+
+.toggle-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.toggle-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.theme-segmented {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 140px));
+  gap: 8px;
+}
+
+.theme-option {
+  position: relative;
+}
+
+.theme-option input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+}
+
+.theme-option span {
+  display: inline-flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-weight: 800;
+}
+
+.theme-option input:checked + span {
+  border-color: var(--blue);
+  color: var(--text);
+  background: rgba(79, 157, 232, 0.12);
+}
+
+.debug-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--surface-soft);
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.debug-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.debug-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.debug-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.debug-value {
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+  font-weight: 700;
 }
 
 button,
@@ -1016,6 +1143,20 @@ button:disabled {
   .settings-head {
     display: grid;
     gap: 6px;
+  }
+
+  .settings-grid,
+  .debug-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .debug-panel-head {
+    display: grid;
+    justify-content: stretch;
+  }
+
+  .theme-segmented {
+    grid-template-columns: 1fr 1fr;
   }
 
   .settings-status {

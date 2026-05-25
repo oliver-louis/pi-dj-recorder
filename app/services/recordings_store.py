@@ -92,12 +92,19 @@ class RecordingsStore:
     def onair_log_path_for_recording(self, filename: str) -> Path:
         return self.sidecar_path_for_recording(filename, ".onair.jsonl")
 
-    def new_filename(self, mix_name: str | None = None) -> str:
+    def new_filename(self, mix_name: str | None = None, *, default_prefix: str = "mix") -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        return self.unique_filename(mix_name, timestamp)
+        return self.unique_filename(mix_name, timestamp, default_prefix=default_prefix)
 
-    def unique_filename(self, mix_name: str | None, timestamp: str, existing_path: Path | None = None) -> str:
-        slug = self.slugify(mix_name)
+    def unique_filename(
+        self,
+        mix_name: str | None,
+        timestamp: str,
+        existing_path: Path | None = None,
+        *,
+        default_prefix: str = "mix",
+    ) -> str:
+        slug = self.slugify(mix_name, default_prefix=default_prefix)
         candidate = f"{slug}_{timestamp}.wav"
         candidate_path = self.recordings_dir / candidate
         if not candidate_path.exists() or candidate_path == existing_path:
@@ -173,12 +180,15 @@ class RecordingsStore:
         return bool(SAFE_WAV_NAME.fullmatch(filename))
 
     @staticmethod
-    def slugify(mix_name: str | None) -> str:
+    def slugify(mix_name: str | None, default_prefix: str = "mix") -> str:
+        fallback = UNSAFE_SLUG_CHARS.sub("-", default_prefix.strip().lower()).strip("-_")
+        fallback = re.sub(r"-{2,}", "-", fallback)
+        fallback = (fallback or "mix")[:80].strip("-_") or "mix"
         if not mix_name:
-            return "mix"
+            return fallback
         slug = UNSAFE_SLUG_CHARS.sub("-", mix_name.strip().lower()).strip("-_")
         slug = re.sub(r"-{2,}", "-", slug)
-        return (slug or "mix")[:80].strip("-_") or "mix"
+        return (slug or fallback)[:80].strip("-_") or fallback
 
     @staticmethod
     def timestamp_from_filename(filename: str) -> str:

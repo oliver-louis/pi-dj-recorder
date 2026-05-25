@@ -64,12 +64,19 @@ class Recorder:
         self.recordings_dir = Path(recordings_dir)
         if config_path is None:
             config_path = Path("config.json") if self.recordings_dir == DEFAULT_RECORDINGS_DIR else self.recordings_dir / "config.json"
+        self.config_path = Path(config_path)
         self._settings_store = SettingsStore(
-            Path(config_path),
+            self.config_path,
             AppSettings(
                 midi_port=midi_port,
                 midi_port_name_hint=midi_port_name_hint,
                 input_device=input_device,
+                default_mix_prefix="mix",
+                track_id_merge_gap_seconds=10.0,
+                auto_enable_metering=False,
+                theme="dark",
+                confirm_delete_recordings=True,
+                stop_discard_countdown_seconds=3,
             ),
         )
         loaded_settings = self._settings_store.load()
@@ -78,6 +85,12 @@ class Recorder:
         self.midi_capture_bin = midi_capture_bin
         self.midi_port = loaded_settings.midi_port
         self.midi_port_name_hint = loaded_settings.midi_port_name_hint
+        self.default_mix_prefix = loaded_settings.default_mix_prefix
+        self.track_id_merge_gap_seconds = loaded_settings.track_id_merge_gap_seconds
+        self.auto_enable_metering = loaded_settings.auto_enable_metering
+        self.theme = loaded_settings.theme if loaded_settings.theme in {"dark", "light"} else "dark"
+        self.confirm_delete_recordings = loaded_settings.confirm_delete_recordings
+        self.stop_discard_countdown_seconds = loaded_settings.stop_discard_countdown_seconds
         self.onair_threshold = max(0, min(127, int(onair_threshold)))
         self.stop_timeout_seconds = stop_timeout_seconds
         self.process_start_grace_seconds = process_start_grace_seconds
@@ -300,7 +313,7 @@ class Recorder:
         return self._store.onair_log_path_for_recording(filename)
 
     def track_ids_export_for_recording(self, filename: str) -> tuple[str, bytes]:
-        return self._track_ids.export_for_recording(filename)
+        return self._track_ids.export_for_recording(filename, merge_gap_seconds=self.track_id_merge_gap_seconds)
 
     def settings_payload(self) -> dict[str, object]:
         with self._lock:
@@ -309,25 +322,43 @@ class Recorder:
             audio_devices = self.list_available_audio_devices()
             editable, busy_reason = self._settings_editability_locked()
             return {
-                "settings": {
-                    "midi_port": self.midi_port,
-                    "midi_port_name_hint": self.midi_port_name_hint,
-                    "input_device": self.input_device,
-                },
+                "settings": asdict(self._current_settings_locked()),
                 "editable": editable,
                 "busy_reason": busy_reason,
                 "midi_devices": midi_devices,
                 "audio_devices": audio_devices,
                 "midi_selected_available": any(device["id"] == self.midi_port for device in midi_devices),
                 "audio_selected_available": any(device["id"] == self.input_device for device in audio_devices),
+                "debug": self._settings_debug_payload_locked(),
             }
 
-    def apply_settings(self, *, midi_port: str, input_device: str) -> dict[str, object]:
+    def apply_settings(
+        self,
+        *,
+        midi_port: str,
+        input_device: str,
+        default_mix_prefix: str,
+        track_id_merge_gap_seconds: float,
+        auto_enable_metering: bool,
+        theme: str,
+        confirm_delete_recordings: bool,
+        stop_discard_countdown_seconds: int,
+    ) -> dict[str, object]:
         with self._lock:
             self._clear_if_process_exited_locked()
             editable, _ = self._settings_editability_locked()
             if not editable:
                 raise RecorderError("Settings can only be changed while idle.")
+
+            default_mix_prefix = default_mix_prefix.strip()
+            if not default_mix_prefix:
+                raise ValueError("Default mix prefix cannot be empty.")
+            if theme not in {"dark", "light"}:
+                raise ValueError("Invalid theme.")
+            if not 0 <= float(track_id_merge_gap_seconds) <= 30:
+                raise ValueError("Track ID merge gap must be between 0 and 30 seconds.")
+            if not 0 <= int(stop_discard_countdown_seconds) <= 15:
+                raise ValueError("Discard countdown must be between 0 and 15 seconds.")
 
             midi_devices = self.list_available_midi_devices()
             audio_devices = self.list_available_audio_devices()
@@ -344,6 +375,12 @@ class Recorder:
             self.midi_port = midi_port
             self.midi_port_name_hint = str(midi_match["name_hint"])
             self.input_device = input_device
+            self.default_mix_prefix = default_mix_prefix
+            self.track_id_merge_gap_seconds = float(track_id_merge_gap_seconds)
+            self.auto_enable_metering = bool(auto_enable_metering)
+            self.theme = theme
+            self.confirm_delete_recordings = bool(confirm_delete_recordings)
+            self.stop_discard_countdown_seconds = int(stop_discard_countdown_seconds)
             self._midi_logs.midi_port = midi_port
             self._midi_daemon.midi_port = midi_port
             self._midi_daemon.midi_port_name_hint = self.midi_port_name_hint
@@ -356,6 +393,12 @@ class Recorder:
                     midi_port=self.midi_port,
                     midi_port_name_hint=self.midi_port_name_hint,
                     input_device=self.input_device,
+                    default_mix_prefix=self.default_mix_prefix,
+                    track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
+                    auto_enable_metering=self.auto_enable_metering,
+                    theme=self.theme,
+                    confirm_delete_recordings=self.confirm_delete_recordings,
+                    stop_discard_countdown_seconds=self.stop_discard_countdown_seconds,
                 )
             )
             if midi_changed:
@@ -386,14 +429,18 @@ class Recorder:
         return RecordingsStore.is_safe_recording_name(filename)
 
     def _new_filename(self, mix_name: str | None = None) -> str:
-        return self._store.new_filename(mix_name)
+        return self._store.new_filename(mix_name, default_prefix=self.default_mix_prefix)
 
     def _unique_filename(self, mix_name: str | None, timestamp: str, existing_path: Path | None = None) -> str:
-        return self._store.unique_filename(mix_name, timestamp, existing_path)
+        return self._store.unique_filename(
+            mix_name,
+            timestamp,
+            existing_path,
+            default_prefix=self.default_mix_prefix,
+        )
 
-    @staticmethod
-    def _slugify(mix_name: str | None) -> str:
-        return RecordingsStore.slugify(mix_name)
+    def _slugify(self, mix_name: str | None) -> str:
+        return RecordingsStore.slugify(mix_name, default_prefix=self.default_mix_prefix)
 
     @staticmethod
     def _timestamp_from_filename(filename: str) -> str:
@@ -439,6 +486,37 @@ class Recorder:
             return False, "metering"
         return True, None
 
+    def _current_settings_locked(self) -> AppSettings:
+        return AppSettings(
+            midi_port=self.midi_port,
+            midi_port_name_hint=self.midi_port_name_hint,
+            input_device=self.input_device,
+            default_mix_prefix=self.default_mix_prefix,
+            track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
+            auto_enable_metering=self.auto_enable_metering,
+            theme=self.theme,
+            confirm_delete_recordings=self.confirm_delete_recordings,
+            stop_discard_countdown_seconds=self.stop_discard_countdown_seconds,
+        )
+
+    def _settings_debug_payload_locked(self) -> dict[str, object]:
+        device_available, device_error = self._runtime.check_device_available(
+            midi_online=self._midi_daemon.midi_online,
+            force=False,
+        )
+        return {
+            "selected_midi_device": self.midi_port,
+            "resolved_midi_port": self._daemon_port_in_use,
+            "selected_audio_input": self.input_device,
+            "midi_online": self._midi_daemon.midi_online,
+            "midi_error": self._midi_daemon._midi_error,
+            "device_available": device_available,
+            "device_error": device_error,
+            "recording": self._runtime.process is not None,
+            "metering_active": self._runtime._metering_enabled,
+            "config_path": str(self.config_path),
+        }
+
     def _file_size(self, path: Path | None) -> int:
         return self._runtime.file_size(path)
 
@@ -466,7 +544,10 @@ class Recorder:
         return TrackIdExporter.format_track_time(seconds)
 
     def _track_sessions_from_onair_events(self, events: list[dict[str, object]]) -> list[dict[str, float | int]]:
-        return self._track_ids.track_sessions_from_onair_events(events)
+        return self._track_ids.track_sessions_from_onair_events(
+            events,
+            merge_gap_seconds=self.track_id_merge_gap_seconds,
+        )
 
     @staticmethod
     def _event_time_seconds(event: dict[str, object]) -> float:

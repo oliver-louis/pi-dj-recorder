@@ -250,7 +250,58 @@ def test_custom_mix_name_is_slugged(monkeypatch, tmp_path):
     assert status.current_filename.endswith(".wav")
 
 
+def test_blank_mix_name_uses_configured_default_prefix(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "midi_port": "16:0",
+                "midi_port_name_hint": "XONE:96",
+                "input_device": "plughw:X2,0",
+                "default_mix_prefix": "vinyl-set",
+            }
+        )
+    )
+    recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
+
+    status = recorder.start()
+
+    assert status.current_filename.startswith("vinyl-set_")
+
+
 def test_settings_bootstrap_from_existing_config(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "midi_port": "24:0",
+                "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
+                "input_device": "plughw:2,0",
+                "default_mix_prefix": "vinyl",
+                "track_id_merge_gap_seconds": 6,
+                "auto_enable_metering": True,
+                "theme": "light",
+                "confirm_delete_recordings": False,
+                "stop_discard_countdown_seconds": 1,
+            }
+        )
+    )
+
+    recorder = Recorder(tmp_path, config_path=tmp_path / "config.json", device_check_enabled=False)
+
+    payload = recorder.settings_payload()
+
+    assert payload["settings"]["midi_port"] == "24:0"
+    assert payload["settings"]["input_device"] == "plughw:2,0"
+    assert payload["settings"]["default_mix_prefix"] == "vinyl"
+    assert payload["settings"]["track_id_merge_gap_seconds"] == 6
+    assert payload["settings"]["auto_enable_metering"] is True
+    assert payload["settings"]["theme"] == "light"
+    assert payload["settings"]["confirm_delete_recordings"] is False
+    assert payload["settings"]["stop_discard_countdown_seconds"] == 1
+
+
+def test_settings_bootstrap_preserves_current_defaults_when_missing(tmp_path):
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
@@ -263,10 +314,14 @@ def test_settings_bootstrap_from_existing_config(tmp_path):
 
     recorder = Recorder(tmp_path, config_path=tmp_path / "config.json", device_check_enabled=False)
 
-    payload = recorder.settings_payload()
+    settings = recorder.settings_payload()["settings"]
 
-    assert payload["settings"]["midi_port"] == "24:0"
-    assert payload["settings"]["input_device"] == "plughw:2,0"
+    assert settings["default_mix_prefix"] == "mix"
+    assert settings["track_id_merge_gap_seconds"] == 10.0
+    assert settings["auto_enable_metering"] is False
+    assert settings["theme"] == "dark"
+    assert settings["confirm_delete_recordings"] is True
+    assert settings["stop_discard_countdown_seconds"] == 3
 
 
 def test_device_check_reports_unavailable(monkeypatch, tmp_path):
@@ -512,6 +567,41 @@ def test_track_ids_export_splits_long_gap(tmp_path):
             "end": "0:50",
         },
     ]
+
+
+def test_track_ids_export_uses_configured_merge_gap(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "midi_port": "16:0",
+                "midi_port_name_hint": "XONE:96",
+                "input_device": "plughw:X2,0",
+                "track_id_merge_gap_seconds": 3,
+            }
+        )
+    )
+    recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
+    wav = tmp_path / "mix_2026-05-12_22-48-36.wav"
+    wav.write_bytes(b"wav")
+    onair = tmp_path / "mix_2026-05-12_22-48-36.onair.jsonl"
+    onair.write_text(
+        "\n".join(
+            [
+                '{"type":"midi_logging_started","recording_filename":"mix_2026-05-12_22-48-36.wav","threshold":30,"time_seconds":0.0}',
+                '{"type":"channel_in","channel":3,"value":127,"time_seconds":0.0}',
+                '{"type":"channel_out","channel":3,"value":29,"time_seconds":3.0}',
+                '{"type":"channel_in","channel":3,"value":31,"time_seconds":7.5}',
+                '{"type":"midi_logging_stopped","time_seconds":20.0}',
+            ]
+        )
+        + "\n"
+    )
+
+    _, payload = recorder.track_ids_export_for_recording(wav.name)
+    items = json.loads(payload)
+
+    assert len(items) == 2
 
 
 def test_track_ids_export_handles_overlap_and_stop_close(tmp_path):
@@ -821,13 +911,30 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
     recorder.start_midi_daemon()
 
-    payload = recorder.apply_settings(midi_port="24:0", input_device="plughw:2,0")
+    payload = recorder.apply_settings(
+        midi_port="24:0",
+        input_device="plughw:2,0",
+        default_mix_prefix="vinyl",
+        track_id_merge_gap_seconds=7,
+        auto_enable_metering=True,
+        theme="light",
+        confirm_delete_recordings=False,
+        stop_discard_countdown_seconds=1,
+    )
 
     assert payload["settings"]["midi_port"] == "24:0"
     assert payload["settings"]["input_device"] == "plughw:2,0"
+    assert payload["settings"]["default_mix_prefix"] == "vinyl"
+    assert payload["settings"]["track_id_merge_gap_seconds"] == 7
+    assert payload["settings"]["auto_enable_metering"] is True
+    assert payload["settings"]["theme"] == "light"
+    assert payload["settings"]["confirm_delete_recordings"] is False
+    assert payload["settings"]["stop_discard_countdown_seconds"] == 1
     persisted = json.loads(config_path.read_text())
     assert persisted["midi_port"] == "24:0"
     assert persisted["input_device"] == "plughw:2,0"
+    assert persisted["default_mix_prefix"] == "vinyl"
+    assert persisted["track_id_merge_gap_seconds"] == 7
     midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
     assert len(midi_processes) == 2
     assert midi_processes[0].signals == [signal.SIGINT]
@@ -839,7 +946,16 @@ def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
     recorder.start()
 
     with pytest.raises(RecorderError):
-        recorder.apply_settings(midi_port="24:0", input_device="plughw:2,0")
+        recorder.apply_settings(
+            midi_port="24:0",
+            input_device="plughw:2,0",
+            default_mix_prefix="mix",
+            track_id_merge_gap_seconds=10,
+            auto_enable_metering=False,
+            theme="dark",
+            confirm_delete_recordings=True,
+            stop_discard_countdown_seconds=3,
+        )
 
 
 def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
@@ -850,6 +966,12 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
                 "midi_port": "24:0",
                 "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
                 "input_device": "plughw:2,0",
+                "default_mix_prefix": "vinyl",
+                "track_id_merge_gap_seconds": 8,
+                "auto_enable_metering": True,
+                "theme": "light",
+                "confirm_delete_recordings": False,
+                "stop_discard_countdown_seconds": 1,
             }
         )
     )
@@ -861,6 +983,8 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
 
     assert payload["midi_selected_available"] is False
     assert payload["audio_selected_available"] is False
+    assert payload["debug"]["selected_midi_device"] == "24:0"
+    assert payload["debug"]["selected_audio_input"] == "plughw:2,0"
 
 
 def test_forced_device_check_still_requires_audio_ready(monkeypatch, tmp_path):
