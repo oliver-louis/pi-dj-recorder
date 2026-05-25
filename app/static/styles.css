@@ -69,9 +69,15 @@ a:hover {
   margin-bottom: 14px;
 }
 
+.topbar-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 18px;
   border: 1px solid var(--line);
@@ -108,6 +114,33 @@ a:hover {
   color: var(--text);
   background: var(--surface);
   white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-flex;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.icon-button:hover {
+  text-decoration: none;
+}
+
+.icon-button.active {
+  background: var(--button);
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .eyebrow {
@@ -840,6 +873,21 @@ button:disabled {
     min-height: 32px;
     padding: 0 10px;
     font-size: 0.82rem;
+  }
+
+  .topbar-controls {
+    gap: 8px;
+  }
+
+  .icon-button {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+  }
+
+  .icon-button svg {
+    width: 15px;
+    height: 15px;
   }
 
   .panel {
