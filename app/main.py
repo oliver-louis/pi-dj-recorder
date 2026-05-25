@@ -39,6 +39,7 @@ class RenameRecordingRequest(BaseModel):
 class UpdateSettingsRequest(BaseModel):
     midi_port: str = Field(min_length=1, max_length=120)
     input_device: str = Field(min_length=1, max_length=240)
+    onair_threshold: int = Field(ge=0, le=127)
     default_mix_prefix: str = Field(min_length=1, max_length=120)
     track_id_merge_gap_seconds: float = Field(ge=0, le=30)
     auto_enable_metering: bool
@@ -91,6 +92,7 @@ async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
             recorder.apply_settings,
             midi_port=request.midi_port,
             input_device=request.input_device,
+            onair_threshold=request.onair_threshold,
             default_mix_prefix=request.default_mix_prefix,
             track_id_merge_gap_seconds=request.track_id_merge_gap_seconds,
             auto_enable_metering=request.auto_enable_metering,

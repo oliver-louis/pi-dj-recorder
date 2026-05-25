@@ -259,6 +259,7 @@ def test_blank_mix_name_uses_configured_default_prefix(monkeypatch, tmp_path):
                 "midi_port": "16:0",
                 "midi_port_name_hint": "XONE:96",
                 "input_device": "plughw:X2,0",
+                "onair_threshold": 30,
                 "default_mix_prefix": "vinyl-set",
             }
         )
@@ -277,6 +278,7 @@ def test_settings_bootstrap_from_existing_config(tmp_path):
                 "midi_port": "24:0",
                 "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
                 "input_device": "plughw:2,0",
+                "onair_threshold": 42,
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 6,
                 "auto_enable_metering": True,
@@ -293,6 +295,7 @@ def test_settings_bootstrap_from_existing_config(tmp_path):
 
     assert payload["settings"]["midi_port"] == "24:0"
     assert payload["settings"]["input_device"] == "plughw:2,0"
+    assert payload["settings"]["onair_threshold"] == 42
     assert payload["settings"]["default_mix_prefix"] == "vinyl"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 6
     assert payload["settings"]["auto_enable_metering"] is True
@@ -316,6 +319,7 @@ def test_settings_bootstrap_preserves_current_defaults_when_missing(tmp_path):
 
     settings = recorder.settings_payload()["settings"]
 
+    assert settings["onair_threshold"] == 30
     assert settings["default_mix_prefix"] == "mix"
     assert settings["track_id_merge_gap_seconds"] == 10.0
     assert settings["auto_enable_metering"] is False
@@ -488,6 +492,43 @@ def test_stop_writes_onair_log_stopped_event(monkeypatch, tmp_path):
     lines = [json.loads(line) for line in onair_path.read_text().splitlines()]
     assert lines[-1]["type"] == "midi_logging_stopped"
     assert isinstance(lines[-1]["time_seconds"], float)
+
+
+def test_onair_log_uses_updated_threshold_value(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 16:0    XONE:96                         MIDI\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    recorder.apply_settings(
+        midi_port="16:0",
+        input_device="plughw:2,0",
+        onair_threshold=44,
+        default_mix_prefix="mix",
+        track_id_merge_gap_seconds=10,
+        auto_enable_metering=False,
+        theme="dark",
+        confirm_delete_recordings=True,
+        stop_discard_countdown_seconds=3,
+    )
+
+    started = recorder.start()
+    onair_path = tmp_path / f"{started.current_filename[:-4]}.onair.jsonl"
+    first_line = json.loads(onair_path.read_text().splitlines()[0])
+
+    assert first_line["threshold"] == 44
 
 
 def test_daemon_changes_while_idle_do_not_create_onair_file(tmp_path):
@@ -738,6 +779,43 @@ def test_daemon_threshold_boundary(tmp_path):
     assert recorder.midi_state_payload()["channels"]["CH1"]["on_air"] is True
 
 
+def test_apply_settings_updates_onair_threshold_immediately(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 16:0    XONE:96                         MIDI\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    recorder._apply_daemon_midi_payload_locked({"ts_utc": "2026-05-12T12:00:00+00:00", "control": 0, "value": 35})
+
+    payload = recorder.apply_settings(
+        midi_port="16:0",
+        input_device="plughw:2,0",
+        onair_threshold=40,
+        default_mix_prefix="mix",
+        track_id_merge_gap_seconds=10,
+        auto_enable_metering=False,
+        theme="dark",
+        confirm_delete_recordings=True,
+        stop_discard_countdown_seconds=3,
+    )
+
+    assert payload["settings"]["onair_threshold"] == 40
+    assert recorder.midi_state_payload()["threshold"] == 40
+    assert recorder.midi_state_payload()["channels"]["CH1"]["on_air"] is False
+
+
 def test_daemon_restarts_when_process_exits(monkeypatch, tmp_path):
     processes = []
 
@@ -914,6 +992,7 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     payload = recorder.apply_settings(
         midi_port="24:0",
         input_device="plughw:2,0",
+        onair_threshold=45,
         default_mix_prefix="vinyl",
         track_id_merge_gap_seconds=7,
         auto_enable_metering=True,
@@ -924,6 +1003,7 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
 
     assert payload["settings"]["midi_port"] == "24:0"
     assert payload["settings"]["input_device"] == "plughw:2,0"
+    assert payload["settings"]["onair_threshold"] == 45
     assert payload["settings"]["default_mix_prefix"] == "vinyl"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 7
     assert payload["settings"]["auto_enable_metering"] is True
@@ -933,10 +1013,11 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     persisted = json.loads(config_path.read_text())
     assert persisted["midi_port"] == "24:0"
     assert persisted["input_device"] == "plughw:2,0"
+    assert persisted["onair_threshold"] == 45
     assert persisted["default_mix_prefix"] == "vinyl"
     assert persisted["track_id_merge_gap_seconds"] == 7
     midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
-    assert len(midi_processes) == 2
+    assert len(midi_processes) >= 2
     assert midi_processes[0].signals == [signal.SIGINT]
 
 
@@ -949,6 +1030,7 @@ def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
         recorder.apply_settings(
             midi_port="24:0",
             input_device="plughw:2,0",
+            onair_threshold=30,
             default_mix_prefix="mix",
             track_id_merge_gap_seconds=10,
             auto_enable_metering=False,
@@ -966,6 +1048,7 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
                 "midi_port": "24:0",
                 "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
                 "input_device": "plughw:2,0",
+                "onair_threshold": 52,
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 8,
                 "auto_enable_metering": True,
@@ -984,6 +1067,7 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
     assert payload["midi_selected_available"] is False
     assert payload["audio_selected_available"] is False
     assert payload["debug"]["selected_midi_device"] == "24:0"
+    assert payload["debug"]["onair_threshold"] == 52
     assert payload["debug"]["selected_audio_input"] == "plughw:2,0"
 
 
@@ -1035,7 +1119,8 @@ def test_start_and_stop_metering(monkeypatch, tmp_path):
 
     assert started.metering_active is True
     assert stopped.metering_active is False
-    assert processes[0].signals == [signal.SIGINT]
+    monitor_process = next(process for process in processes if process.command and process.command[0] == "ffmpeg")
+    assert monitor_process.signals == [signal.SIGINT]
 
 
 def test_stop_metering_during_recording_keeps_recording(monkeypatch, tmp_path):

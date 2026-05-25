@@ -71,6 +71,7 @@ class Recorder:
                 midi_port=midi_port,
                 midi_port_name_hint=midi_port_name_hint,
                 input_device=input_device,
+                onair_threshold=onair_threshold,
                 default_mix_prefix="mix",
                 track_id_merge_gap_seconds=10.0,
                 auto_enable_metering=False,
@@ -85,13 +86,13 @@ class Recorder:
         self.midi_capture_bin = midi_capture_bin
         self.midi_port = loaded_settings.midi_port
         self.midi_port_name_hint = loaded_settings.midi_port_name_hint
+        self.onair_threshold = max(0, min(127, int(loaded_settings.onair_threshold)))
         self.default_mix_prefix = loaded_settings.default_mix_prefix
         self.track_id_merge_gap_seconds = loaded_settings.track_id_merge_gap_seconds
         self.auto_enable_metering = loaded_settings.auto_enable_metering
         self.theme = loaded_settings.theme if loaded_settings.theme in {"dark", "light"} else "dark"
         self.confirm_delete_recordings = loaded_settings.confirm_delete_recordings
         self.stop_discard_countdown_seconds = loaded_settings.stop_discard_countdown_seconds
-        self.onair_threshold = max(0, min(127, int(onair_threshold)))
         self.stop_timeout_seconds = stop_timeout_seconds
         self.process_start_grace_seconds = process_start_grace_seconds
         self.device_check_timeout_seconds = device_check_timeout_seconds
@@ -337,6 +338,7 @@ class Recorder:
         *,
         midi_port: str,
         input_device: str,
+        onair_threshold: int,
         default_mix_prefix: str,
         track_id_merge_gap_seconds: float,
         auto_enable_metering: bool,
@@ -355,6 +357,8 @@ class Recorder:
                 raise ValueError("Default mix prefix cannot be empty.")
             if theme not in {"dark", "light"}:
                 raise ValueError("Invalid theme.")
+            if not 0 <= int(onair_threshold) <= 127:
+                raise ValueError("On-air threshold must be between 0 and 127.")
             if not 0 <= float(track_id_merge_gap_seconds) <= 30:
                 raise ValueError("Track ID merge gap must be between 0 and 30 seconds.")
             if not 0 <= int(stop_discard_countdown_seconds) <= 15:
@@ -375,6 +379,7 @@ class Recorder:
             self.midi_port = midi_port
             self.midi_port_name_hint = str(midi_match["name_hint"])
             self.input_device = input_device
+            self.onair_threshold = int(onair_threshold)
             self.default_mix_prefix = default_mix_prefix
             self.track_id_merge_gap_seconds = float(track_id_merge_gap_seconds)
             self.auto_enable_metering = bool(auto_enable_metering)
@@ -382,8 +387,10 @@ class Recorder:
             self.confirm_delete_recordings = bool(confirm_delete_recordings)
             self.stop_discard_countdown_seconds = int(stop_discard_countdown_seconds)
             self._midi_logs.midi_port = midi_port
+            self._midi_logs.onair_threshold = self.onair_threshold
             self._midi_daemon.midi_port = midi_port
             self._midi_daemon.midi_port_name_hint = self.midi_port_name_hint
+            self._midi_daemon.update_threshold(self.onair_threshold)
             self._runtime.input_device = input_device
             self._runtime._device_check_time = None
             self._runtime._device_available = False
@@ -393,6 +400,7 @@ class Recorder:
                     midi_port=self.midi_port,
                     midi_port_name_hint=self.midi_port_name_hint,
                     input_device=self.input_device,
+                    onair_threshold=self.onair_threshold,
                     default_mix_prefix=self.default_mix_prefix,
                     track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
                     auto_enable_metering=self.auto_enable_metering,
@@ -491,6 +499,7 @@ class Recorder:
             midi_port=self.midi_port,
             midi_port_name_hint=self.midi_port_name_hint,
             input_device=self.input_device,
+            onair_threshold=self.onair_threshold,
             default_mix_prefix=self.default_mix_prefix,
             track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
             auto_enable_metering=self.auto_enable_metering,
@@ -507,6 +516,7 @@ class Recorder:
         return {
             "selected_midi_device": self.midi_port,
             "resolved_midi_port": self._daemon_port_in_use,
+            "onair_threshold": self.onair_threshold,
             "selected_audio_input": self.input_device,
             "midi_online": self._midi_daemon.midi_online,
             "midi_error": self._midi_daemon._midi_error,

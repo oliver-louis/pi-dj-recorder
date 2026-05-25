@@ -46,17 +46,40 @@
         <section class="settings-section">
           <div class="settings-section-head">
             <h3>Capture devices</h3>
-            <p>Choose which MIDI source drives on-air tracking and which ALSA input FFmpeg records from.</p>
+            <p>Pick the active MIDI and audio inputs the recorder should use.</p>
           </div>
           <div class="settings-grid">
             <label class="field">
-              <span>MIDI input</span>
+              <span class="field-header">
+                <span>MIDI input</span>
+                <button class="help-trigger" type="button" aria-label="About MIDI input" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">This ALSA MIDI input drives live on-air indicators and the per-recording MIDI sidecar logs.</span>
+              </span>
               <select id="settings-midi-port"></select>
             </label>
 
             <label class="field">
-              <span>Audio input</span>
+              <span class="field-header">
+                <span>Audio input</span>
+                <button class="help-trigger" type="button" aria-label="About audio input" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">This ALSA input is what FFmpeg uses for recording and live metering.</span>
+              </span>
               <select id="settings-audio-device"></select>
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>On-air threshold</span>
+                <button class="help-trigger" type="button" aria-label="About on-air threshold" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">A channel counts as on-air when its MIDI fader value is at or above this threshold. The current default behavior is 30.</span>
+              </span>
+              <input id="settings-onair-threshold" type="number" min="0" max="127" step="1">
             </label>
           </div>
         </section>
@@ -64,38 +87,68 @@
         <section class="settings-section">
           <div class="settings-section-head">
             <h3>Workflow defaults</h3>
-            <p>Keep common recording behavior aligned with how you usually play.</p>
+            <p>Small defaults that shape new recordings and exports.</p>
           </div>
           <div class="settings-grid">
             <label class="field">
-              <span>Default mix prefix</span>
+              <span class="field-header">
+                <span>Default mix prefix</span>
+                <button class="help-trigger" type="button" aria-label="About default mix prefix" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">Used when you leave the mix name blank. For example, a prefix of vinyl gives filenames like vinyl_2026-05-26_21-30-00.wav.</span>
+              </span>
               <input id="settings-default-mix-prefix" type="text" maxlength="120" placeholder="mix">
             </label>
 
             <label class="field">
-              <span>Track ID merge gap (seconds)</span>
+              <span class="field-header">
+                <span>Track ID merge gap (seconds)</span>
+                <button class="help-trigger" type="button" aria-label="About track ID merge gap" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">Short fader cuts inside this window are treated as part of the same track when exporting ID templates.</span>
+              </span>
               <input id="settings-track-gap" type="number" min="0" max="30" step="1">
             </label>
           </div>
           <label class="toggle-field">
             <input id="settings-auto-metering" type="checkbox">
-            <span>Auto-enable metering on the Record page when idle</span>
+            <span class="field-header inline">
+              <span>Auto-enable metering on the Record page when idle</span>
+              <button class="help-trigger" type="button" aria-label="About auto-enable metering" aria-expanded="false">
+                <span aria-hidden="true">i</span>
+              </button>
+              <span class="help-bubble" role="tooltip">When enabled, opening the Record page will try to start live metering automatically if nothing else is running.</span>
+            </span>
           </label>
         </section>
 
         <section class="settings-section">
           <div class="settings-section-head">
             <h3>Safety</h3>
-            <p>Destructive actions can stay cautious without slowing down the rest of the app.</p>
+            <p>Set how cautious the destructive actions should feel.</p>
           </div>
           <div class="settings-grid">
             <label class="toggle-field">
               <input id="settings-confirm-delete" type="checkbox">
-              <span>Confirm before deleting recordings</span>
+              <span class="field-header inline">
+                <span>Confirm before deleting recordings</span>
+                <button class="help-trigger" type="button" aria-label="About delete confirmation" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">Adds a confirmation prompt before permanently deleting a saved recording and its sidecar files.</span>
+              </span>
             </label>
 
             <label class="field">
-              <span>Discard countdown (seconds)</span>
+              <span class="field-header">
+                <span>Discard countdown (seconds)</span>
+                <button class="help-trigger" type="button" aria-label="About discard countdown" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">Controls how long you need to wait before confirming Stop Without Saving.</span>
+              </span>
               <input id="settings-discard-countdown" type="number" min="0" max="15" step="1">
             </label>
           </div>
@@ -104,7 +157,14 @@
         <section class="settings-section">
           <div class="settings-section-head">
             <h3>Appearance</h3>
-            <p>Theme now lives with the app, so your devices stay in sync.</p>
+            <p>Theme is saved at the app level so your devices stay aligned.</p>
+          </div>
+          <div class="field-header standalone">
+            <span>Theme</span>
+            <button class="help-trigger" type="button" aria-label="About theme" aria-expanded="false">
+              <span aria-hidden="true">i</span>
+            </button>
+            <span class="help-bubble" role="tooltip">Changes the default app theme across browsers and devices that use this recorder.</span>
           </div>
           <div class="theme-segmented" role="radiogroup" aria-label="Theme">
             <label class="theme-option">

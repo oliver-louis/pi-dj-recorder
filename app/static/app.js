@@ -5,6 +5,7 @@ const DEFAULT_SETTINGS = {
   midi_port: "16:0",
   midi_port_name_hint: "XONE:96",
   input_device: "plughw:X2,0",
+  onair_threshold: 30,
   default_mix_prefix: "mix",
   track_id_merge_gap_seconds: 10,
   auto_enable_metering: false,
@@ -801,10 +802,49 @@ function buildDeviceOptions(select, devices, currentValue, selectedAvailable) {
   select.value = currentValue || "";
 }
 
+function setupHelpBubbles() {
+  const triggers = Array.from(document.querySelectorAll(".help-trigger"));
+  if (!triggers.length) return;
+
+  const closeAll = (except = null) => {
+    triggers.forEach((trigger) => {
+      if (trigger === except) return;
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.closest(".field-header")?.classList.remove("open");
+    });
+  };
+
+  triggers.forEach((trigger) => {
+    const header = trigger.closest(".field-header");
+    if (!header) return;
+
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const willOpen = trigger.getAttribute("aria-expanded") !== "true";
+      closeAll(trigger);
+      trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      header.classList.toggle("open", willOpen);
+    });
+
+    trigger.addEventListener("blur", () => {
+      window.setTimeout(() => {
+        if (!header.contains(document.activeElement)) {
+          trigger.setAttribute("aria-expanded", "false");
+          header.classList.remove("open");
+        }
+      }, 0);
+    });
+  });
+
+  document.addEventListener("click", () => closeAll());
+}
+
 function updateSettingsPage(payload) {
   syncSettingsSnapshot(payload);
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
+  const thresholdInput = document.getElementById("settings-onair-threshold");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -818,6 +858,7 @@ function updateSettingsPage(payload) {
   if (
     !midiSelect ||
     !audioSelect ||
+    !thresholdInput ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -832,6 +873,7 @@ function updateSettingsPage(payload) {
   const settings = payload.settings || {};
   buildDeviceOptions(midiSelect, payload.midi_devices || [], settings.midi_port || "", Boolean(payload.midi_selected_available));
   buildDeviceOptions(audioSelect, payload.audio_devices || [], settings.input_device || "", Boolean(payload.audio_selected_available));
+  thresholdInput.value = String(settings.onair_threshold ?? 30);
   prefixInput.value = settings.default_mix_prefix || "mix";
   mergeGapInput.value = String(settings.track_id_merge_gap_seconds ?? 10);
   autoMeteringInput.checked = Boolean(settings.auto_enable_metering);
@@ -842,6 +884,7 @@ function updateSettingsPage(payload) {
   const editable = Boolean(payload.editable);
   midiSelect.disabled = !editable;
   audioSelect.disabled = !editable;
+  thresholdInput.disabled = !editable;
   prefixInput.disabled = !editable;
   mergeGapInput.disabled = !editable;
   autoMeteringInput.disabled = !editable;
@@ -868,6 +911,7 @@ function updateSettingsPage(payload) {
     [
       ["Selected MIDI", debug.selected_midi_device || "-"],
       ["Active MIDI port", debug.resolved_midi_port || "-"],
+      ["On-air threshold", String(debug.onair_threshold ?? settings.onair_threshold ?? 30)],
       ["Selected audio", debug.selected_audio_input || "-"],
       ["MIDI daemon", debug.midi_online ? "Online" : "Offline"],
       ["MIDI error", debug.midi_error || "-"],
@@ -902,6 +946,7 @@ async function loadSettings() {
 async function saveSettings() {
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
+  const thresholdInput = document.getElementById("settings-onair-threshold");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -911,6 +956,7 @@ async function saveSettings() {
   if (
     !midiSelect ||
     !audioSelect ||
+    !thresholdInput ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -926,6 +972,7 @@ async function saveSettings() {
       body: JSON.stringify({
         midi_port: midiSelect.value,
         input_device: audioSelect.value,
+        onair_threshold: Number(thresholdInput.value),
         default_mix_prefix: prefixInput.value.trim(),
         track_id_merge_gap_seconds: Number(mergeGapInput.value),
         auto_enable_metering: autoMeteringInput.checked,
@@ -970,6 +1017,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // TODO: Add Nextcloud sync status/action controls here when that feature exists.
   }
   if (page === "settings") {
+    setupHelpBubbles();
     document.querySelectorAll('input[name="settings-theme"]').forEach((input) => {
       input.addEventListener("change", () => applyTheme(input.value));
     });

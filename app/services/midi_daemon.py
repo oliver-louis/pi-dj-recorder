@@ -125,6 +125,17 @@ class MidiDaemonService:
         self._midi_channels[channel_name] = updated
         return current, next_on_air
 
+    def update_threshold(self, value: int) -> None:
+        self.onair_threshold = max(0, min(127, int(value)))
+        for channel_name, current in list(self._midi_channels.items()):
+            self._midi_channels[channel_name] = MidiChannelState(
+                channel_name=current.channel_name,
+                controller_id=current.controller_id,
+                value=current.value,
+                on_air=current.value >= self.onair_threshold,
+                last_changed_at=current.last_changed_at,
+            )
+
     def parse_midi_line(self, line: str) -> dict[str, object]:
         return parse_midi_line(line, source_port=self.midi_port, elapsed_ms=0)
 
