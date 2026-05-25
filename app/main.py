@@ -20,7 +20,10 @@ STATIC_DIR = APP_DIR / "static"
 
 recorder = Recorder(
     Path(os.getenv("PI_RECORDER_RECORDINGS_DIR", "/home/copper/mixes")),
+    input_device=os.getenv("PI_RECORDER_INPUT_DEVICE", "plughw:X2,0"),
     midi_port=os.getenv("PI_RECORDER_MIDI_PORT", "16:0"),
+    midi_port_name_hint=os.getenv("PI_RECORDER_MIDI_PORT_NAME_HINT", "XONE:96"),
+    config_path=Path(os.getenv("PI_RECORDER_CONFIG_PATH", "config.json")),
     onair_threshold=int(os.getenv("PI_RECORDER_ONAIR_THRESHOLD", "30")),
 )
 
@@ -31,6 +34,11 @@ class StartRecordingRequest(BaseModel):
 
 class RenameRecordingRequest(BaseModel):
     mix_name: str = Field(min_length=1, max_length=120)
+
+
+class UpdateSettingsRequest(BaseModel):
+    midi_port: str = Field(min_length=1, max_length=120)
+    input_device: str = Field(min_length=1, max_length=240)
 
 
 @asynccontextmanager
@@ -55,9 +63,33 @@ async def recordings_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "recordings.html")
 
 
+@app.get("/settings")
+async def settings_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "settings.html")
+
+
 @app.get("/api/status")
 async def status() -> dict[str, object]:
     return asdict(await asyncio.to_thread(recorder.status))
+
+
+@app.get("/api/settings")
+async def settings() -> dict[str, object]:
+    return await asyncio.to_thread(recorder.settings_payload)
+
+
+@app.put("/api/settings")
+async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(
+            recorder.apply_settings,
+            midi_port=request.midi_port,
+            input_device=request.input_device,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RecorderError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.websocket("/ws/meters")

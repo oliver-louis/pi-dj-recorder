@@ -380,6 +380,51 @@ class RecordingRuntimeService:
             "-",
         ]
 
+    def list_audio_input_devices(self) -> list[dict[str, object]]:
+        try:
+            result = subprocess.run(
+                ["arecord", "-l"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, TypeError):
+            return []
+        if result.returncode != 0:
+            return []
+
+        devices: list[dict[str, object]] = []
+        pattern = re.compile(
+            r"^card\s+(\d+):\s*([^\[]+)\[(.+?)\],\s*device\s+(\d+):\s*([^\[]+)\[(.+?)\]\s*$"
+        )
+        for line in (result.stdout or "").splitlines():
+            match = pattern.match(line.strip())
+            if not match:
+                continue
+            card_index = int(match.group(1))
+            card_id = match.group(2).strip()
+            card_name = match.group(3).strip()
+            device_index = int(match.group(4))
+            device_id = match.group(5).strip()
+            device_name = match.group(6).strip()
+            device_value = f"plughw:{card_index},{device_index}"
+            devices.append(
+                {
+                    "id": device_value,
+                    "card_index": card_index,
+                    "device_index": device_index,
+                    "card_id": card_id,
+                    "card_name": card_name,
+                    "device_id": device_id,
+                    "device_name": device_name,
+                    "label": f"{device_value} — {card_name} / {device_name}",
+                }
+            )
+        return devices
+
     def clean_error(self, stderr: str | None) -> str:
         message = (stderr or "").strip().splitlines()
         if not message:

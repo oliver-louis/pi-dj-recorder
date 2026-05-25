@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import signal
 import subprocess
 import threading
@@ -144,11 +145,17 @@ class MidiDaemonService:
                 return port_id
         hint = self.midi_port_name_hint.strip().lower()
         if hint:
+            normalized_hint = self.normalize_name(hint)
             for port_id, client_name, port_name in ports:
                 haystack = f"{client_name} {port_name}".lower()
-                if hint in haystack:
+                normalized_haystack = self.normalize_name(haystack)
+                if hint in haystack or (normalized_hint and normalized_hint in normalized_haystack):
                     return port_id
         return None
+
+    @staticmethod
+    def normalize_name(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
 
     def list_midi_ports(self) -> list[tuple[str, str, str]] | None:
         try:

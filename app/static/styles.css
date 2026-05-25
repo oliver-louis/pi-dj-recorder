@@ -71,7 +71,7 @@ a:hover {
 
 .tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 18px;
   border: 1px solid var(--line);
@@ -237,7 +237,19 @@ input {
   font: inherit;
 }
 
-input:focus {
+select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--text);
+  background: var(--surface-soft);
+  font: inherit;
+}
+
+input:focus,
+select:focus {
   border-color: var(--blue);
   outline: 3px solid rgba(31, 111, 178, 0.16);
 }
@@ -246,6 +258,41 @@ input:focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(150px, 1fr));
   gap: 12px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-copy {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.settings-status {
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 button,
@@ -735,6 +782,10 @@ button:disabled {
     grid-template-columns: 1fr 1fr;
   }
 
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
   .recording-actions {
     grid-template-columns: 1fr;
   }
@@ -909,8 +960,19 @@ button:disabled {
     font-size: 0.86rem;
   }
 
-  input {
+  input,
+  select {
     min-height: 38px;
+  }
+
+  .settings-head {
+    display: grid;
+    gap: 6px;
+  }
+
+  .settings-status {
+    white-space: normal;
+    font-size: 0.8rem;
   }
 
   .actions {

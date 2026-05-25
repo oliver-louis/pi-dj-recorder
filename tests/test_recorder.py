@@ -250,6 +250,25 @@ def test_custom_mix_name_is_slugged(monkeypatch, tmp_path):
     assert status.current_filename.endswith(".wav")
 
 
+def test_settings_bootstrap_from_existing_config(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "midi_port": "24:0",
+                "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
+                "input_device": "plughw:2,0",
+            }
+        )
+    )
+
+    recorder = Recorder(tmp_path, config_path=tmp_path / "config.json", device_check_enabled=False)
+
+    payload = recorder.settings_payload()
+
+    assert payload["settings"]["midi_port"] == "24:0"
+    assert payload["settings"]["input_device"] == "plughw:2,0"
+
+
 def test_device_check_reports_unavailable(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 1, stderr="cannot open audio device\n")
@@ -664,6 +683,22 @@ def test_resolve_midi_port_uses_name_hint_when_port_changes(monkeypatch, tmp_pat
     assert recorder._resolve_midi_port() == "24:0"
 
 
+def test_resolve_midi_port_uses_normalized_name_hint(monkeypatch, tmp_path):
+    recorder = Recorder(tmp_path, device_check_enabled=False, midi_port="16:0", midi_port_name_hint="XONE:96")
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert recorder._resolve_midi_port() == "24:0"
+
+
 def test_daemon_restarts_when_resolved_port_changes(monkeypatch, tmp_path):
     processes = []
 
@@ -727,6 +762,105 @@ def test_daemon_marks_device_available_when_midi_is_online_for_passive_status(mo
 
     assert available is True
     assert error is None
+
+
+def test_list_audio_input_devices(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+
+    devices = recorder.list_available_audio_devices()
+
+    assert devices == [
+        {
+            "id": "plughw:2,0",
+            "card_index": 2,
+            "device_index": 0,
+            "card_id": "XONE96",
+            "card_name": "XONE 96 USB 2",
+            "device_id": "USB Audio",
+            "device_name": "USB Audio",
+            "label": "plughw:2,0 — XONE 96 USB 2 / USB Audio",
+        }
+    ]
+
+
+def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
+    processes = []
+
+    def fake_popen(command, **kwargs):
+        process = FakeProcess(command, **kwargs)
+        processes.append(process)
+        return process
+
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config_path = tmp_path / "config.json"
+    recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
+    recorder.start_midi_daemon()
+
+    payload = recorder.apply_settings(midi_port="24:0", input_device="plughw:2,0")
+
+    assert payload["settings"]["midi_port"] == "24:0"
+    assert payload["settings"]["input_device"] == "plughw:2,0"
+    persisted = json.loads(config_path.read_text())
+    assert persisted["midi_port"] == "24:0"
+    assert persisted["input_device"] == "plughw:2,0"
+    midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
+    assert len(midi_processes) == 2
+    assert midi_processes[0].signals == [signal.SIGINT]
+
+
+def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    recorder.start()
+
+    with pytest.raises(RecorderError):
+        recorder.apply_settings(midi_port="24:0", input_device="plughw:2,0")
+
+
+def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "midi_port": "24:0",
+                "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
+                "input_device": "plughw:2,0",
+            }
+        )
+    )
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
+    recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
+
+    payload = recorder.settings_payload()
+
+    assert payload["midi_selected_available"] is False
+    assert payload["audio_selected_available"] is False
 
 
 def test_forced_device_check_still_requires_audio_ready(monkeypatch, tmp_path):

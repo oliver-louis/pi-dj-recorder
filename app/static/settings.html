@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Settings - Pi Xone:96 Recorder</title>
+    <script>
+      document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";
+    </script>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body data-page="settings">
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Device configuration</p>
+          <h1>Settings</h1>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch theme">Light</button>
+      </header>
+      <nav class="tabs" aria-label="Primary">
+        <a href="/">Record</a>
+        <a href="/recordings">Recordings</a>
+        <a class="active" href="/settings">Settings</a>
+      </nav>
+
+      <section class="panel settings-panel">
+        <div class="settings-head">
+          <div>
+            <h2>Capture devices</h2>
+            <p class="settings-copy">Choose which MIDI source drives on-air tracking and which ALSA input FFmpeg records from.</p>
+          </div>
+          <span id="settings-editability" class="settings-status">Checking…</span>
+        </div>
+
+        <div id="settings-warning" class="device-message" role="status"></div>
+
+        <div class="settings-grid">
+          <label class="field">
+            <span>MIDI input</span>
+            <select id="settings-midi-port"></select>
+          </label>
+
+          <label class="field">
+            <span>Audio input</span>
+            <select id="settings-audio-device"></select>
+          </label>
+        </div>
+
+        <div class="settings-actions">
+          <button id="settings-save-button" class="primary" type="button">Save Settings</button>
+        </div>
+
+        <p id="message" class="message" role="status"></p>
+      </section>
+    </main>
+  </body>
+</html>

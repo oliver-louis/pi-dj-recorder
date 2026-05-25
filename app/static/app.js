@@ -3,6 +3,7 @@ const METER_FLOOR_DB = -60;
 let waveformObserver = null;
 let activePlayerAudio = null;
 let dashboardMeteringActive = false;
+let settingsSnapshot = null;
 
 function setupThemeToggle() {
   const toggle = document.getElementById("theme-toggle");
@@ -697,6 +698,80 @@ async function deleteRecording(filename) {
   }
 }
 
+function buildDeviceOptions(select, devices, currentValue, selectedAvailable) {
+  select.replaceChildren();
+  if (!selectedAvailable && currentValue) {
+    const unavailable = document.createElement("option");
+    unavailable.value = currentValue;
+    unavailable.textContent = `${currentValue} (currently unavailable)`;
+    select.append(unavailable);
+  }
+  devices.forEach((device) => {
+    const option = document.createElement("option");
+    option.value = device.id;
+    option.textContent = device.label;
+    select.append(option);
+  });
+  select.value = currentValue || "";
+}
+
+function updateSettingsPage(payload) {
+  settingsSnapshot = payload;
+  const midiSelect = document.getElementById("settings-midi-port");
+  const audioSelect = document.getElementById("settings-audio-device");
+  const saveButton = document.getElementById("settings-save-button");
+  const status = document.getElementById("settings-editability");
+  const warning = document.getElementById("settings-warning");
+  if (!midiSelect || !audioSelect || !saveButton || !status || !warning) return;
+
+  const settings = payload.settings || {};
+  buildDeviceOptions(midiSelect, payload.midi_devices || [], settings.midi_port || "", Boolean(payload.midi_selected_available));
+  buildDeviceOptions(audioSelect, payload.audio_devices || [], settings.input_device || "", Boolean(payload.audio_selected_available));
+
+  const editable = Boolean(payload.editable);
+  midiSelect.disabled = !editable;
+  audioSelect.disabled = !editable;
+  saveButton.disabled = !editable;
+  status.textContent = editable ? "Ready to change" : payload.busy_reason === "recording" ? "Locked while recording" : "Locked while metering";
+  status.classList.toggle("online", editable);
+  status.classList.toggle("offline", !editable);
+
+  const warnings = [];
+  if (!payload.midi_selected_available) warnings.push("Saved MIDI device is currently unavailable.");
+  if (!payload.audio_selected_available) warnings.push("Saved audio device is currently unavailable.");
+  warning.textContent = warnings.join(" ");
+  warning.classList.toggle("visible", warnings.length > 0);
+}
+
+async function loadSettings() {
+  try {
+    updateSettingsPage(await fetchJson("/api/settings"));
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+}
+
+async function saveSettings() {
+  const midiSelect = document.getElementById("settings-midi-port");
+  const audioSelect = document.getElementById("settings-audio-device");
+  if (!midiSelect || !audioSelect) return;
+  setMessage("Saving settings...");
+  try {
+    const payload = await fetchJson("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        midi_port: midiSelect.value,
+        input_device: audioSelect.value,
+      }),
+    });
+    updateSettingsPage(payload);
+    setMessage("Settings saved.");
+  } catch (error) {
+    setMessage(error.message, true);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   setupThemeToggle();
@@ -715,5 +790,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (page === "recordings") {
     loadRecordings();
     // TODO: Add Nextcloud sync status/action controls here when that feature exists.
+  }
+  if (page === "settings") {
+    document.getElementById("settings-save-button").addEventListener("click", saveSettings);
+    loadSettings();
   }
 });

@@ -245,6 +245,105 @@ def test_midi_state_websocket_returns_payload(tmp_path, monkeypatch):
     assert set(payload["channels"].keys()) == {"CH1", "CH2", "CH3", "CH4"}
 
 
+def test_settings_page_and_endpoint(tmp_path, monkeypatch):
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        page = client.get("/settings")
+        response = client.get("/api/settings")
+    finally:
+        main.recorder = original
+
+    assert page.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["editable"] is True
+    assert payload["settings"]["midi_port"] == "16:0"
+    assert payload["midi_devices"][0]["id"] == "24:0"
+    assert payload["audio_devices"][0]["id"] == "plughw:2,0"
+
+
+def test_update_settings_endpoint(tmp_path, monkeypatch):
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.put("/api/settings", json={"midi_port": "24:0", "input_device": "plughw:2,0"})
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 200
+    assert response.json()["settings"]["midi_port"] == "24:0"
+    assert response.json()["settings"]["input_device"] == "plughw:2,0"
+
+
+def test_update_settings_rejects_invalid_selection(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.put("/api/settings", json={"midi_port": "99:9", "input_device": "plughw:9,9"})
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 400
+
+
+def test_update_settings_rejects_while_busy(tmp_path, monkeypatch):
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        client.post("/api/recordings/start")
+        response = client.put("/api/settings", json={"midi_port": "24:0", "input_device": "plughw:2,0"})
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 409
+
+
 def test_waveform_endpoint_success(tmp_path, monkeypatch):
     filename = "mix_2026-05-06_01-00-00.wav"
     (tmp_path / filename).write_bytes(b"wav")

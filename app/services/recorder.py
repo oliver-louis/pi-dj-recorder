@@ -26,6 +26,7 @@ from app.services.models import MeterState, RecordingFile, RecordingStatus, Wave
 from app.services.parsers import AstatsParser, parse_midi_line
 from app.services.recording_runtime import RecordingRuntimeService
 from app.services.recordings_store import DEFAULT_RECORDINGS_DIR, RecordingsStore
+from app.services.settings import AppSettings, SettingsStore
 from app.services.track_ids import TrackIdExporter
 from app.services.waveforms import WaveformService
 
@@ -52,6 +53,7 @@ class Recorder:
         midi_capture_bin: str = "aseqdump",
         midi_port: str = "16:0",
         midi_port_name_hint: str = "XONE:96",
+        config_path: Path | None = None,
         onair_threshold: int = 30,
         stop_timeout_seconds: float = 15.0,
         process_start_grace_seconds: float = 0.35,
@@ -60,11 +62,22 @@ class Recorder:
         device_check_enabled: bool = True,
     ) -> None:
         self.recordings_dir = Path(recordings_dir)
+        if config_path is None:
+            config_path = Path("config.json") if self.recordings_dir == DEFAULT_RECORDINGS_DIR else self.recordings_dir / "config.json"
+        self._settings_store = SettingsStore(
+            Path(config_path),
+            AppSettings(
+                midi_port=midi_port,
+                midi_port_name_hint=midi_port_name_hint,
+                input_device=input_device,
+            ),
+        )
+        loaded_settings = self._settings_store.load()
         self.ffmpeg_bin = ffmpeg_bin
-        self.input_device = input_device
+        self.input_device = loaded_settings.input_device
         self.midi_capture_bin = midi_capture_bin
-        self.midi_port = midi_port
-        self.midi_port_name_hint = midi_port_name_hint
+        self.midi_port = loaded_settings.midi_port
+        self.midi_port_name_hint = loaded_settings.midi_port_name_hint
         self.onair_threshold = max(0, min(127, int(onair_threshold)))
         self.stop_timeout_seconds = stop_timeout_seconds
         self.process_start_grace_seconds = process_start_grace_seconds
@@ -76,7 +89,7 @@ class Recorder:
         self._store = RecordingsStore(self.recordings_dir)
         self._runtime = RecordingRuntimeService(
             ffmpeg_bin=ffmpeg_bin,
-            input_device=input_device,
+            input_device=self.input_device,
             stop_timeout_seconds=stop_timeout_seconds,
             process_start_grace_seconds=process_start_grace_seconds,
             device_check_timeout_seconds=device_check_timeout_seconds,
@@ -86,14 +99,14 @@ class Recorder:
         self._midi_logs = MidiLoggingService(
             store=self._store,
             midi_capture_bin=midi_capture_bin,
-            midi_port=midi_port,
+            midi_port=self.midi_port,
             resolve_port=self._resolve_midi_port,
             onair_threshold=self.onair_threshold,
         )
         self._midi_daemon = MidiDaemonService(
             midi_capture_bin=midi_capture_bin,
-            midi_port=midi_port,
-            midi_port_name_hint=midi_port_name_hint,
+            midi_port=self.midi_port,
+            midi_port_name_hint=self.midi_port_name_hint,
             onair_threshold=self.onair_threshold,
             on_channel_payload=self._handle_daemon_payload,
         )
@@ -289,6 +302,85 @@ class Recorder:
     def track_ids_export_for_recording(self, filename: str) -> tuple[str, bytes]:
         return self._track_ids.export_for_recording(filename)
 
+    def settings_payload(self) -> dict[str, object]:
+        with self._lock:
+            self._clear_if_process_exited_locked()
+            midi_devices = self.list_available_midi_devices()
+            audio_devices = self.list_available_audio_devices()
+            editable, busy_reason = self._settings_editability_locked()
+            return {
+                "settings": {
+                    "midi_port": self.midi_port,
+                    "midi_port_name_hint": self.midi_port_name_hint,
+                    "input_device": self.input_device,
+                },
+                "editable": editable,
+                "busy_reason": busy_reason,
+                "midi_devices": midi_devices,
+                "audio_devices": audio_devices,
+                "midi_selected_available": any(device["id"] == self.midi_port for device in midi_devices),
+                "audio_selected_available": any(device["id"] == self.input_device for device in audio_devices),
+            }
+
+    def apply_settings(self, *, midi_port: str, input_device: str) -> dict[str, object]:
+        with self._lock:
+            self._clear_if_process_exited_locked()
+            editable, _ = self._settings_editability_locked()
+            if not editable:
+                raise RecorderError("Settings can only be changed while idle.")
+
+            midi_devices = self.list_available_midi_devices()
+            audio_devices = self.list_available_audio_devices()
+            midi_match = next((device for device in midi_devices if device["id"] == midi_port), None)
+            if midi_match is None:
+                raise ValueError("Invalid MIDI device.")
+            audio_match = next((device for device in audio_devices if device["id"] == input_device), None)
+            if audio_match is None:
+                raise ValueError("Invalid audio device.")
+
+            midi_changed = midi_port != self.midi_port
+            audio_changed = input_device != self.input_device
+
+            self.midi_port = midi_port
+            self.midi_port_name_hint = str(midi_match["name_hint"])
+            self.input_device = input_device
+            self._midi_logs.midi_port = midi_port
+            self._midi_daemon.midi_port = midi_port
+            self._midi_daemon.midi_port_name_hint = self.midi_port_name_hint
+            self._runtime.input_device = input_device
+            self._runtime._device_check_time = None
+            self._runtime._device_available = False
+            self._runtime._device_error = None
+            self._settings_store.save(
+                AppSettings(
+                    midi_port=self.midi_port,
+                    midi_port_name_hint=self.midi_port_name_hint,
+                    input_device=self.input_device,
+                )
+            )
+            if midi_changed:
+                self._stop_daemon_midi_locked()
+                self._ensure_midi_daemon_locked()
+            elif audio_changed:
+                self._runtime._device_check_time = None
+            return self.settings_payload()
+
+    def list_available_midi_devices(self) -> list[dict[str, object]]:
+        ports = self._list_midi_ports() or []
+        return [
+            {
+                "id": port_id,
+                "client_name": client_name,
+                "port_name": port_name,
+                "name_hint": f"{client_name} {port_name}".strip(),
+                "label": f"{port_id} — {client_name} / {port_name}",
+            }
+            for port_id, client_name, port_name in ports
+        ]
+
+    def list_available_audio_devices(self) -> list[dict[str, object]]:
+        return self._runtime.list_audio_input_devices()
+
     @staticmethod
     def is_safe_recording_name(filename: str) -> bool:
         return RecordingsStore.is_safe_recording_name(filename)
@@ -339,6 +431,13 @@ class Recorder:
             device_available=device_available,
             device_error=device_error,
         )
+
+    def _settings_editability_locked(self) -> tuple[bool, str | None]:
+        if self._runtime.process is not None:
+            return False, "recording"
+        if self._runtime.monitor_process is not None:
+            return False, "metering"
+        return True, None
 
     def _file_size(self, path: Path | None) -> int:
         return self._runtime.file_size(path)
