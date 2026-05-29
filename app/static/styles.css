@@ -322,22 +322,25 @@ dd {
 
 .prolink-now {
   display: grid;
-  gap: 14px;
-  padding: 18px 0;
-  border-top: 1px solid var(--line);
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
 }
 
 .prolink-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .prolink-player {
   display: grid;
   min-width: 0;
-  gap: 4px;
-  padding: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-soft);
@@ -347,16 +350,18 @@ dd {
 .prolink-player span:last-child {
   min-width: 0;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 700;
   overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 
 .prolink-player strong {
   min-width: 0;
   color: var(--text);
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 
 input {
@@ -645,6 +650,45 @@ button:disabled {
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
+}
+
+.section-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collapse-toggle {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.collapse-toggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.16s ease;
+}
+
+.collapse-toggle[aria-expanded="false"]::before {
+  transform: rotate(-45deg) translateX(-1px);
+}
+
+.collapsible-content[hidden] {
+  display: none;
 }
 
 .midi-daemon-status {
@@ -1069,6 +1113,21 @@ button:disabled {
     position: static;
     margin-top: 8px;
   }
+
+  .on-air,
+  .prolink-now {
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .prolink-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .prolink-player {
+    padding: 7px 9px;
+  }
 }
 
 @media (max-width: 480px) {
@@ -1159,6 +1218,31 @@ button:disabled {
     padding: 9px;
   }
 
+  .on-air,
+  .prolink-now {
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .on-air-head {
+    gap: 8px;
+  }
+
+  .section-head-actions {
+    gap: 6px;
+  }
+
+  .midi-daemon-status {
+    font-size: 0.74rem;
+  }
+
+  .collapse-toggle {
+    width: 26px;
+    min-width: 26px;
+    height: 26px;
+    min-height: 26px;
+  }
+
   .meter-head {
     grid-template-columns: auto 1fr;
     gap: 8px;
@@ -1190,7 +1274,7 @@ button:disabled {
   }
 
   .on-air-chip {
-    min-height: 58px;
+    min-height: 44px;
     flex-direction: column;
     justify-content: center;
     gap: 4px;
@@ -1207,6 +1291,24 @@ button:disabled {
     display: block;
     line-height: 1;
     font-size: 0.68rem;
+  }
+
+  .prolink-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .prolink-player {
+    padding: 7px 9px;
+  }
+
+  .prolink-channel,
+  .prolink-player span:last-child {
+    font-size: 0.7rem;
+  }
+
+  .prolink-player strong {
+    font-size: 0.82rem;
   }
 
   .meter-track {

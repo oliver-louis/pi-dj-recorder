@@ -69,9 +69,12 @@
         <section class="on-air" aria-label="On air channels">
           <div class="on-air-head">
             <h2>On air</h2>
-            <span id="midi-daemon-status" class="midi-daemon-status">MIDI offline</span>
+            <div class="section-head-actions">
+              <span id="midi-daemon-status" class="midi-daemon-status">MIDI offline</span>
+              <button class="collapse-toggle" type="button" data-collapse-target="on-air-grid" aria-expanded="true" aria-controls="on-air-grid" aria-label="Toggle on-air details"></button>
+            </div>
           </div>
-          <div class="on-air-grid">
+          <div id="on-air-grid" class="on-air-grid collapsible-content">
             <div id="on-air-CH1" class="on-air-chip"><span>CH1</span><span class="on-air-state">Off</span></div>
             <div id="on-air-CH2" class="on-air-chip"><span>CH2</span><span class="on-air-state">Off</span></div>
             <div id="on-air-CH3" class="on-air-chip"><span>CH3</span><span class="on-air-state">Off</span></div>
@@ -82,9 +85,12 @@
         <section class="prolink-now" aria-label="CDJ metadata">
           <div class="on-air-head">
             <h2>CDJs</h2>
-            <span id="prolink-metadata-status" class="midi-daemon-status">Metadata idle</span>
+            <div class="section-head-actions">
+              <span id="prolink-metadata-status" class="midi-daemon-status">Metadata idle</span>
+              <button class="collapse-toggle" type="button" data-collapse-target="prolink-grid" aria-expanded="true" aria-controls="prolink-grid" aria-label="Toggle CDJ metadata details"></button>
+            </div>
           </div>
-          <div class="prolink-grid">
+          <div id="prolink-grid" class="prolink-grid collapsible-content">
             <div class="prolink-player">
               <span class="prolink-channel">CH2 / Player 2</span>
               <strong id="prolink-player-2-title">-</strong>

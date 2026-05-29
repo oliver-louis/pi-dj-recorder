@@ -97,6 +97,18 @@ function setupDefaultMixPlaceholder() {
   window.setInterval(update, 1000);
 }
 
+function setupCollapsibleSections() {
+  document.querySelectorAll("[data-collapse-target]").forEach((button) => {
+    const target = document.getElementById(button.dataset.collapseTarget);
+    if (!target) return;
+    button.addEventListener("click", () => {
+      const expanded = button.getAttribute("aria-expanded") !== "false";
+      button.setAttribute("aria-expanded", String(!expanded));
+      target.hidden = expanded;
+    });
+  });
+}
+
 function defaultRecordingFilename() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
@@ -1078,6 +1090,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   setupThemeToggle();
   if (page === "dashboard") {
+    setupCollapsibleSections();
     document.getElementById("start-button").addEventListener("click", startRecording);
     document.getElementById("stop-button").addEventListener("click", stopRecording);
     document.getElementById("metering-toggle-button").addEventListener("click", toggleMetering);
