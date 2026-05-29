@@ -1153,6 +1153,8 @@ def test_settings_payload_reports_prolink_status_file(tmp_path):
                 "mapping": {"2": 2, "3": 3},
                 "players_on_air": [2],
                 "last_values": {"2": 127, "3": 0},
+                "config_path": str(tmp_path / "config.json"),
+                "config_loaded": True,
             }
         )
     )
@@ -1163,6 +1165,7 @@ def test_settings_payload_reports_prolink_status_file(tmp_path):
     assert payload["debug"]["prolink_onair"]["available"] is True
     assert payload["debug"]["prolink_onair"]["online"] is True
     assert payload["debug"]["prolink_onair"]["players_on_air"] == [2]
+    assert payload["debug"]["prolink_onair"]["config_loaded"] is True
 
 
 def test_forced_device_check_still_requires_audio_ready(monkeypatch, tmp_path):

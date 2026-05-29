@@ -274,6 +274,8 @@ public final class ProlinkOnair {
         payload.put("resolved_midi_port", resolvedMidiPort);
         payload.put("threshold", current.threshold);
         payload.put("mapping", current.channelToPlayer);
+        payload.put("config_path", current.configPath.toString());
+        payload.put("config_loaded", Files.isRegularFile(current.configPath));
         synchronized (playersOnAir) {
             payload.put("players_on_air", new ArrayList<>(playersOnAir));
             payload.put("last_values", new HashMap<>(lastValuesByChannel));

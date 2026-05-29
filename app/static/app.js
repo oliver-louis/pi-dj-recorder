@@ -950,6 +950,7 @@ function updateSettingsPage(payload) {
       ["Pro Link mapping", Object.keys(prolinkMapping).length ? JSON.stringify(prolinkMapping) : JSON.stringify(settings.prolink_onair_channel_to_player || {})],
       ["Pro Link on-air players", Array.isArray(prolink.players_on_air) ? prolink.players_on_air.join(", ") || "-" : "-"],
       ["Pro Link fader values", Object.keys(prolinkValues).length ? JSON.stringify(prolinkValues) : "-"],
+      ["Pro Link config", prolink.config_path ? `${prolink.config_path}${prolink.config_loaded === false ? " (missing)" : ""}` : "-"],
       ["Pro Link status path", debug.prolink_status_path || "-"],
     ].forEach(([label, value]) => {
       const row = document.createElement("div");
