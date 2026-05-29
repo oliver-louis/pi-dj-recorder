@@ -148,6 +148,29 @@ sudo systemctl restart pi-recorder.service
 
 If you clone the repo into a different directory, update `WorkingDirectory`, `PATH`, and `ExecStart` in the service file.
 
+### Update and restart helpers
+
+After the services are installed, these scripts make normal Pi maintenance shorter:
+
+```bash
+cd /home/copper/pi-dj-recorder
+./scripts/update-pi.sh
+```
+
+That pulls the latest code, installs Python dependencies, rebuilds the Pro DJ Link sidecar, installs the systemd units, reloads systemd, and restarts both services.
+
+For a simple restart without pulling or rebuilding:
+
+```bash
+./scripts/restart-services.sh
+```
+
+To watch both service logs together:
+
+```bash
+./scripts/watch-logs.sh
+```
+
 ## Configuration
 
 Environment variables:
