@@ -187,6 +187,7 @@ class RecordingRuntimeService:
         pid_override: int | None = None,
         device_available: bool = True,
         device_error: str | None = None,
+        prolink_metadata: dict[str, object] | None = None,
     ) -> RecordingStatus:
         process = self._process
         path = self._current_path
@@ -207,6 +208,7 @@ class RecordingRuntimeService:
             current_file_size=size,
             device_available=device_available,
             device_error=device_error,
+            prolink_metadata=prolink_metadata,
         )
 
     def meter_payload(self) -> dict[str, object]:

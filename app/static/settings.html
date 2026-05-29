@@ -99,6 +99,16 @@
               <span class="help-bubble" role="tooltip">The separate Pro DJ Link service reads the same MIDI input and lights mapped CDJs when their faders are up.</span>
             </span>
           </label>
+          <label class="toggle-field">
+            <input id="settings-prolink-metadata-enabled" type="checkbox">
+            <span class="field-header inline">
+              <span>Enable CDJ metadata tracking</span>
+              <button class="help-trigger" type="button" aria-label="About CDJ metadata tracking" aria-expanded="false">
+                <span aria-hidden="true">i</span>
+              </button>
+              <span class="help-bubble" role="tooltip">The Pro DJ Link service reads loaded CDJ track metadata for the Record page and Track ID export autofill.</span>
+            </span>
+          </label>
           <div class="settings-grid">
             <label class="field">
               <span class="field-header">
@@ -131,6 +141,17 @@
                 <span class="help-bubble" role="tooltip">The CDJ player number that should show on-air when mixer channel 3 is up.</span>
               </span>
               <input id="settings-prolink-ch3-player" type="number" min="1" max="6" step="1">
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>Virtual CDJ player</span>
+                <button class="help-trigger" type="button" aria-label="About virtual CDJ player number" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">The sidecar uses an unused player number for metadata requests. Player 4 is the default for this setup.</span>
+              </span>
+              <input id="settings-prolink-virtual-player" type="number" min="1" max="4" step="1">
             </label>
           </div>
         </section>

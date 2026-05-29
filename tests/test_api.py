@@ -33,6 +33,7 @@ def test_status_endpoint(tmp_path, monkeypatch):
         "current_file_size": 0,
         "device_available": True,
         "device_error": None,
+        "prolink_metadata": {},
     }
 
 
@@ -278,6 +279,8 @@ def test_settings_page_and_endpoint(tmp_path, monkeypatch):
     assert payload["settings"]["prolink_onair_enabled"] is True
     assert payload["settings"]["prolink_onair_threshold"] == 1
     assert payload["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
+    assert payload["settings"]["prolink_metadata_enabled"] is True
+    assert payload["settings"]["prolink_virtual_player_number"] == 4
     assert payload["settings"]["default_mix_prefix"] == "mix"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 10.0
     assert payload["settings"]["auto_enable_metering"] is False
@@ -317,6 +320,8 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
                 "prolink_onair_enabled": False,
                 "prolink_onair_threshold": 2,
                 "prolink_onair_channel_to_player": {"2": 2, "3": 3},
+                "prolink_metadata_enabled": False,
+                "prolink_virtual_player_number": 4,
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 5,
                 "auto_enable_metering": True,
@@ -335,6 +340,8 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
     assert response.json()["settings"]["prolink_onair_enabled"] is False
     assert response.json()["settings"]["prolink_onair_threshold"] == 2
     assert response.json()["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
+    assert response.json()["settings"]["prolink_metadata_enabled"] is False
+    assert response.json()["settings"]["prolink_virtual_player_number"] == 4
     assert response.json()["settings"]["default_mix_prefix"] == "vinyl"
     assert response.json()["settings"]["theme"] == "light"
 

@@ -14,6 +14,8 @@ class AppSettings:
     prolink_onair_enabled: bool
     prolink_onair_threshold: int
     prolink_onair_channel_to_player: dict[str, int]
+    prolink_metadata_enabled: bool
+    prolink_virtual_player_number: int
     default_mix_prefix: str
     track_id_merge_gap_seconds: float
     auto_enable_metering: bool
@@ -44,6 +46,12 @@ class SettingsStore:
             prolink_onair_channel_to_player=self._load_channel_to_player(
                 raw.get("prolink_onair_channel_to_player"),
                 self.defaults.prolink_onair_channel_to_player,
+            ),
+            prolink_metadata_enabled=bool(
+                raw.get("prolink_metadata_enabled", self.defaults.prolink_metadata_enabled)
+            ),
+            prolink_virtual_player_number=int(
+                raw.get("prolink_virtual_player_number", self.defaults.prolink_virtual_player_number)
             ),
             default_mix_prefix=str(raw.get("default_mix_prefix") or self.defaults.default_mix_prefix),
             track_id_merge_gap_seconds=float(

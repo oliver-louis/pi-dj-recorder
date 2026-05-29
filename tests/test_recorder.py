@@ -448,12 +448,11 @@ def test_start_writes_onair_log_with_seeded_channels(monkeypatch, tmp_path):
     onair_path = tmp_path / f"{started.current_filename[:-4]}.onair.jsonl"
     lines = [json.loads(line) for line in onair_path.read_text().splitlines()]
 
-    assert lines[0] == {
-        "type": "midi_logging_started",
-        "recording_filename": started.current_filename,
-        "threshold": 30,
-        "time_seconds": 0.0,
-    }
+    assert lines[0]["type"] == "midi_logging_started"
+    assert lines[0]["recording_filename"] == started.current_filename
+    assert lines[0]["threshold"] == 30
+    assert lines[0]["time_seconds"] == 0.0
+    assert lines[0]["ts_utc"]
     assert lines[1] == {
         "type": "channel_in",
         "channel": 3,
@@ -519,6 +518,8 @@ def test_onair_log_uses_updated_threshold_value(monkeypatch, tmp_path):
         prolink_onair_enabled=True,
         prolink_onair_threshold=1,
         prolink_onair_channel_to_player={"2": 2, "3": 3},
+        prolink_metadata_enabled=True,
+        prolink_virtual_player_number=4,
         default_mix_prefix="mix",
         track_id_merge_gap_seconds=10,
         auto_enable_metering=False,
@@ -720,6 +721,69 @@ def test_track_ids_export_handles_duplicate_events(tmp_path):
     ]
 
 
+def test_track_ids_export_autofills_from_prolink_metadata_log(tmp_path):
+    metadata_log = tmp_path / "prolink-metadata.jsonl"
+    recorder = Recorder(tmp_path, prolink_metadata_log_path=metadata_log, device_check_enabled=False)
+    wav = tmp_path / "mix_2026-05-12_22-48-36.wav"
+    wav.write_bytes(b"wav")
+    onair = tmp_path / "mix_2026-05-12_22-48-36.onair.jsonl"
+    onair.write_text(
+        "\n".join(
+            [
+                '{"type":"midi_logging_started","recording_filename":"mix_2026-05-12_22-48-36.wav","threshold":30,"time_seconds":0.0,"ts_utc":"2026-05-12T22:48:36+00:00"}',
+                '{"type":"channel_in","channel":2,"value":45,"time_seconds":10.0}',
+                '{"type":"channel_in","channel":3,"value":45,"time_seconds":20.0}',
+                '{"type":"midi_logging_stopped","time_seconds":50.0}',
+            ]
+        )
+        + "\n"
+    )
+    metadata_log.write_text(
+        "\n".join(
+            [
+                '{"type":"track_loaded","ts_utc":"2026-05-12T22:48:40+00:00","player":2,"channel":2,"artist":"Yan Cook","title":"Ember"}',
+                '{"type":"track_loaded","ts_utc":"2026-05-12T22:48:50+00:00","player":3,"channel":3,"artist":"Pegassi","title":"Flashback (Extended Mix)"}',
+            ]
+        )
+        + "\n"
+    )
+
+    _, payload = recorder.track_ids_export_for_recording(wav.name)
+    items = json.loads(payload)
+
+    assert items[0]["artist"] == "Yan Cook"
+    assert items[0]["title"] == "Ember"
+    assert items[1]["artist"] == "Pegassi"
+    assert items[1]["title"] == "Flashback (Extended Mix)"
+
+
+def test_track_ids_export_keeps_channels_separate_for_metadata(tmp_path):
+    metadata_log = tmp_path / "prolink-metadata.jsonl"
+    recorder = Recorder(tmp_path, prolink_metadata_log_path=metadata_log, device_check_enabled=False)
+    wav = tmp_path / "mix_2026-05-12_22-48-36.wav"
+    wav.write_bytes(b"wav")
+    onair = tmp_path / "mix_2026-05-12_22-48-36.onair.jsonl"
+    onair.write_text(
+        "\n".join(
+            [
+                '{"type":"midi_logging_started","recording_filename":"mix_2026-05-12_22-48-36.wav","threshold":30,"time_seconds":0.0,"ts_utc":"2026-05-12T22:48:36+00:00"}',
+                '{"type":"channel_in","channel":3,"value":45,"time_seconds":10.0}',
+                '{"type":"midi_logging_stopped","time_seconds":20.0}',
+            ]
+        )
+        + "\n"
+    )
+    metadata_log.write_text(
+        '{"type":"track_loaded","ts_utc":"2026-05-12T22:48:40+00:00","player":2,"channel":2,"artist":"Wrong","title":"Channel"}\n'
+    )
+
+    _, payload = recorder.track_ids_export_for_recording(wav.name)
+    items = json.loads(payload)
+
+    assert items[0]["artist"] == ""
+    assert items[0]["title"] == "CDJ 2"
+
+
 def test_track_ids_export_rejects_malformed_log(tmp_path):
     recorder = Recorder(tmp_path, device_check_enabled=False)
     wav = tmp_path / "mix_2026-05-12_22-48-36.wav"
@@ -809,6 +873,8 @@ def test_apply_settings_updates_onair_threshold_immediately(monkeypatch, tmp_pat
         prolink_onair_enabled=True,
         prolink_onair_threshold=1,
         prolink_onair_channel_to_player={"2": 2, "3": 3},
+        prolink_metadata_enabled=True,
+        prolink_virtual_player_number=4,
         default_mix_prefix="mix",
         track_id_merge_gap_seconds=10,
         auto_enable_metering=False,
@@ -888,9 +954,10 @@ def test_daemon_restarts_when_resolved_port_changes(monkeypatch, tmp_path):
     recorder.start_midi_daemon()
     recorder._ensure_midi_daemon_locked("24:0")
 
-    assert len(processes) == 2
-    assert processes[0].signals == [signal.SIGINT]
-    assert processes[1].command == ["aseqdump", "-p", "24:0"]
+    midi_processes = [process for process in processes if process.command[0] == "aseqdump"]
+    assert len(midi_processes) == 2
+    assert midi_processes[0].signals == [signal.SIGINT]
+    assert midi_processes[1].command == ["aseqdump", "-p", "24:0"]
 
 
 def test_daemon_stops_when_port_disappears(monkeypatch, tmp_path):
@@ -1002,6 +1069,8 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
         prolink_onair_enabled=False,
         prolink_onair_threshold=2,
         prolink_onair_channel_to_player={"2": 2, "3": 3},
+        prolink_metadata_enabled=False,
+        prolink_virtual_player_number=4,
         default_mix_prefix="vinyl",
         track_id_merge_gap_seconds=7,
         auto_enable_metering=True,
@@ -1016,6 +1085,8 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     assert payload["settings"]["prolink_onair_enabled"] is False
     assert payload["settings"]["prolink_onair_threshold"] == 2
     assert payload["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
+    assert payload["settings"]["prolink_metadata_enabled"] is False
+    assert payload["settings"]["prolink_virtual_player_number"] == 4
     assert payload["settings"]["default_mix_prefix"] == "vinyl"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 7
     assert payload["settings"]["auto_enable_metering"] is True
@@ -1029,6 +1100,8 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     assert persisted["prolink_onair_enabled"] is False
     assert persisted["prolink_onair_threshold"] == 2
     assert persisted["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
+    assert persisted["prolink_metadata_enabled"] is False
+    assert persisted["prolink_virtual_player_number"] == 4
     assert persisted["default_mix_prefix"] == "vinyl"
     assert persisted["track_id_merge_gap_seconds"] == 7
     midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
@@ -1063,6 +1136,8 @@ def test_apply_settings_rejects_invalid_prolink_mapping(monkeypatch, tmp_path):
             prolink_onair_enabled=True,
             prolink_onair_threshold=1,
             prolink_onair_channel_to_player={"2": 0, "3": 3},
+            prolink_metadata_enabled=True,
+            prolink_virtual_player_number=4,
             default_mix_prefix="mix",
             track_id_merge_gap_seconds=10,
             auto_enable_metering=False,
@@ -1085,6 +1160,8 @@ def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
             prolink_onair_enabled=True,
             prolink_onair_threshold=1,
             prolink_onair_channel_to_player={"2": 2, "3": 3},
+            prolink_metadata_enabled=True,
+            prolink_virtual_player_number=4,
             default_mix_prefix="mix",
             track_id_merge_gap_seconds=10,
             auto_enable_metering=False,
@@ -1106,6 +1183,8 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
                 "prolink_onair_enabled": True,
                 "prolink_onair_threshold": 1,
                 "prolink_onair_channel_to_player": {"2": 2, "3": 3},
+                "prolink_metadata_enabled": True,
+                "prolink_virtual_player_number": 4,
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 8,
                 "auto_enable_metering": True,

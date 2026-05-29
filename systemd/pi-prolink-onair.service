@@ -11,10 +11,12 @@ WorkingDirectory=/home/copper/pi-dj-recorder
 Environment=PROLINK_ONAIR_MIDI_CAPTURE_BIN=aseqdump
 Environment=PROLINK_ONAIR_CONFIG_PATH=/home/copper/pi-dj-recorder/config.json
 Environment=PROLINK_ONAIR_STATUS_PATH=/tmp/pi-prolink-onair-state.json
+Environment=PROLINK_METADATA_LOG_PATH=/tmp/pi-prolink-metadata.jsonl
 Environment=PROLINK_ONAIR_MIDI_PORT=24:0
 Environment=PROLINK_ONAIR_MIDI_PORT_HINT=XONE:96
 Environment=PROLINK_ONAIR_THRESHOLD=1
 Environment=PROLINK_ONAIR_CHANNEL_TO_PLAYER=2:2,3:3
+Environment=PROLINK_VIRTUAL_PLAYER_NUMBER=4
 Environment=PROLINK_ONAIR_REPEAT_MS=1000
 ExecStart=/usr/bin/java -jar /home/copper/pi-dj-recorder/prolink-onair/target/prolink-onair-0.1.0.jar
 Restart=always

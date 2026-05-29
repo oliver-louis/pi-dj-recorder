@@ -9,6 +9,8 @@ const DEFAULT_SETTINGS = {
   prolink_onair_enabled: true,
   prolink_onair_threshold: 1,
   prolink_onair_channel_to_player: { 2: 2, 3: 3 },
+  prolink_metadata_enabled: true,
+  prolink_virtual_player_number: 4,
   default_mix_prefix: "mix",
   track_id_merge_gap_seconds: 10,
   auto_enable_metering: false,
@@ -184,6 +186,26 @@ function updateDashboard(status) {
     meteringToggleButton.disabled = !status.device_available && !status.recording;
     meteringToggleButton.textContent = dashboardMeteringActive ? "Meters On" : "Meters Off";
   }
+  updateProlinkMetadata(status.prolink_metadata || {});
+}
+
+function updateProlinkMetadata(players) {
+  const status = document.getElementById("prolink-metadata-status");
+  if (!status) return;
+  const hasMetadata = [2, 3].some((player) => {
+    const metadata = players[String(player)] || players[player];
+    return metadata && (metadata.title || metadata.artist);
+  });
+  status.textContent = hasMetadata ? "Metadata online" : "Metadata idle";
+  status.classList.toggle("online", hasMetadata);
+  status.classList.toggle("offline", !hasMetadata);
+  [2, 3].forEach((player) => {
+    const metadata = players[String(player)] || players[player] || {};
+    const title = document.getElementById(`prolink-player-${player}-title`);
+    const artist = document.getElementById(`prolink-player-${player}-artist`);
+    if (title) title.textContent = metadata.title || "-";
+    if (artist) artist.textContent = metadata.artist || "-";
+  });
 }
 
 function connectMeters() {
@@ -849,9 +871,11 @@ function updateSettingsPage(payload) {
   const audioSelect = document.getElementById("settings-audio-device");
   const thresholdInput = document.getElementById("settings-onair-threshold");
   const prolinkEnabledInput = document.getElementById("settings-prolink-enabled");
+  const prolinkMetadataEnabledInput = document.getElementById("settings-prolink-metadata-enabled");
   const prolinkThresholdInput = document.getElementById("settings-prolink-threshold");
   const prolinkCh2Input = document.getElementById("settings-prolink-ch2-player");
   const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
+  const prolinkVirtualPlayerInput = document.getElementById("settings-prolink-virtual-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -867,9 +891,11 @@ function updateSettingsPage(payload) {
     !audioSelect ||
     !thresholdInput ||
     !prolinkEnabledInput ||
+    !prolinkMetadataEnabledInput ||
     !prolinkThresholdInput ||
     !prolinkCh2Input ||
     !prolinkCh3Input ||
+    !prolinkVirtualPlayerInput ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -886,10 +912,12 @@ function updateSettingsPage(payload) {
   buildDeviceOptions(audioSelect, payload.audio_devices || [], settings.input_device || "", Boolean(payload.audio_selected_available));
   thresholdInput.value = String(settings.onair_threshold ?? 30);
   prolinkEnabledInput.checked = settings.prolink_onair_enabled !== false;
+  prolinkMetadataEnabledInput.checked = settings.prolink_metadata_enabled !== false;
   prolinkThresholdInput.value = String(settings.prolink_onair_threshold ?? 1);
   const prolinkMapping = settings.prolink_onair_channel_to_player || {};
   prolinkCh2Input.value = String(prolinkMapping["2"] ?? prolinkMapping[2] ?? 2);
   prolinkCh3Input.value = String(prolinkMapping["3"] ?? prolinkMapping[3] ?? 3);
+  prolinkVirtualPlayerInput.value = String(settings.prolink_virtual_player_number ?? 4);
   prefixInput.value = settings.default_mix_prefix || "mix";
   mergeGapInput.value = String(settings.track_id_merge_gap_seconds ?? 10);
   autoMeteringInput.checked = Boolean(settings.auto_enable_metering);
@@ -902,9 +930,11 @@ function updateSettingsPage(payload) {
   audioSelect.disabled = !editable;
   thresholdInput.disabled = !editable;
   prolinkEnabledInput.disabled = !editable;
+  prolinkMetadataEnabledInput.disabled = !editable;
   prolinkThresholdInput.disabled = !editable;
   prolinkCh2Input.disabled = !editable;
   prolinkCh3Input.disabled = !editable;
+  prolinkVirtualPlayerInput.disabled = !editable;
   prefixInput.disabled = !editable;
   mergeGapInput.disabled = !editable;
   autoMeteringInput.disabled = !editable;
@@ -930,6 +960,7 @@ function updateSettingsPage(payload) {
     const prolink = debug.prolink_onair || {};
     const prolinkMapping = prolink.mapping || {};
     const prolinkValues = prolink.last_values || {};
+    const prolinkPlayers = prolink.players || {};
     debugRoot.innerHTML = "";
     [
       ["Selected MIDI", debug.selected_midi_device || "-"],
@@ -950,6 +981,9 @@ function updateSettingsPage(payload) {
       ["Pro Link mapping", Object.keys(prolinkMapping).length ? JSON.stringify(prolinkMapping) : JSON.stringify(settings.prolink_onair_channel_to_player || {})],
       ["Pro Link on-air players", Array.isArray(prolink.players_on_air) ? prolink.players_on_air.join(", ") || "-" : "-"],
       ["Pro Link fader values", Object.keys(prolinkValues).length ? JSON.stringify(prolinkValues) : "-"],
+      ["Pro Link metadata", Object.keys(prolinkPlayers).length ? JSON.stringify(prolinkPlayers) : "-"],
+      ["Pro Link virtual player", String(prolink.virtual_player_number ?? settings.prolink_virtual_player_number ?? 4)],
+      ["Pro Link metadata log", debug.prolink_metadata_log_path || "-"],
       ["Pro Link config", prolink.config_path ? `${prolink.config_path}${prolink.config_loaded === false ? " (missing)" : ""}` : "-"],
       ["Pro Link status path", debug.prolink_status_path || "-"],
     ].forEach(([label, value]) => {
@@ -980,9 +1014,11 @@ async function saveSettings() {
   const audioSelect = document.getElementById("settings-audio-device");
   const thresholdInput = document.getElementById("settings-onair-threshold");
   const prolinkEnabledInput = document.getElementById("settings-prolink-enabled");
+  const prolinkMetadataEnabledInput = document.getElementById("settings-prolink-metadata-enabled");
   const prolinkThresholdInput = document.getElementById("settings-prolink-threshold");
   const prolinkCh2Input = document.getElementById("settings-prolink-ch2-player");
   const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
+  const prolinkVirtualPlayerInput = document.getElementById("settings-prolink-virtual-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -994,9 +1030,11 @@ async function saveSettings() {
     !audioSelect ||
     !thresholdInput ||
     !prolinkEnabledInput ||
+    !prolinkMetadataEnabledInput ||
     !prolinkThresholdInput ||
     !prolinkCh2Input ||
     !prolinkCh3Input ||
+    !prolinkVirtualPlayerInput ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -1019,6 +1057,8 @@ async function saveSettings() {
           2: Number(prolinkCh2Input.value),
           3: Number(prolinkCh3Input.value),
         },
+        prolink_metadata_enabled: prolinkMetadataEnabledInput.checked,
+        prolink_virtual_player_number: Number(prolinkVirtualPlayerInput.value),
         default_mix_prefix: prefixInput.value.trim(),
         track_id_merge_gap_seconds: Number(mergeGapInput.value),
         auto_enable_metering: autoMeteringInput.checked,

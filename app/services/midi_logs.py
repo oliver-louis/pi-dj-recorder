@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
+from datetime import datetime, timezone
 
 from app.services.models import MidiChannelState
 from app.services.parsers import parse_midi_line
@@ -95,6 +96,7 @@ class MidiLoggingService:
                 "recording_filename": recording_path.name,
                 "threshold": self.onair_threshold,
                 "time_seconds": 0.0,
+                "ts_utc": datetime.now(timezone.utc).isoformat(),
             }
         )
         for state in channel_states.values():

@@ -25,6 +25,7 @@ recorder = Recorder(
     midi_port_name_hint=os.getenv("PI_RECORDER_MIDI_PORT_NAME_HINT", "XONE:96"),
     config_path=Path(os.getenv("PI_RECORDER_CONFIG_PATH", "config.json")),
     prolink_status_path=Path(os.getenv("PI_RECORDER_PROLINK_STATUS_PATH", "/tmp/pi-prolink-onair-state.json")),
+    prolink_metadata_log_path=Path(os.getenv("PI_RECORDER_PROLINK_METADATA_LOG_PATH", "/tmp/pi-prolink-metadata.jsonl")),
     onair_threshold=int(os.getenv("PI_RECORDER_ONAIR_THRESHOLD", "30")),
 )
 
@@ -44,6 +45,8 @@ class UpdateSettingsRequest(BaseModel):
     prolink_onair_enabled: bool = True
     prolink_onair_threshold: int = Field(default=1, ge=0, le=127)
     prolink_onair_channel_to_player: dict[str, int] = Field(default_factory=lambda: {"2": 2, "3": 3})
+    prolink_metadata_enabled: bool = True
+    prolink_virtual_player_number: int = Field(default=4, ge=1, le=4)
     default_mix_prefix: str = Field(min_length=1, max_length=120)
     track_id_merge_gap_seconds: float = Field(ge=0, le=30)
     auto_enable_metering: bool
@@ -100,6 +103,8 @@ async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
             prolink_onair_enabled=request.prolink_onair_enabled,
             prolink_onair_threshold=request.prolink_onair_threshold,
             prolink_onair_channel_to_player=request.prolink_onair_channel_to_player,
+            prolink_metadata_enabled=request.prolink_metadata_enabled,
+            prolink_virtual_player_number=request.prolink_virtual_player_number,
             default_mix_prefix=request.default_mix_prefix,
             track_id_merge_gap_seconds=request.track_id_merge_gap_seconds,
             auto_enable_metering=request.auto_enable_metering,

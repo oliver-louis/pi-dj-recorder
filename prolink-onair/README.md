@@ -1,17 +1,20 @@
 # prolink-onair
 
-Headless Pro DJ Link on-air bridge for the Pi recorder setup.
+Headless Pro DJ Link bridge for the Pi recorder setup.
 
 This service reads Xone:96 channel fader MIDI with `aseqdump` and sends Pro DJ Link
-on-air packets with Deep Symmetry `beat-link`. It is intentionally independent of
-the recorder web app: the CDJ on-air indicators can keep working even if the
-recording service is stopped or restarted.
+on-air packets with Deep Symmetry `beat-link`. It also watches CDJ loaded-track
+metadata and writes a small live status file plus a metadata JSONL log for Track
+ID export autofill. It is intentionally independent of the recorder web app: the
+CDJ on-air indicators can keep working even if the recording service is stopped
+or restarted.
 
 Default mapping:
 
 - Xone CH2 -> CDJ Player 2
 - Xone CH3 -> CDJ Player 3
 - fader MIDI value `>= 1` counts as on-air
+- virtual CDJ player number `4` is used for metadata requests
 
 ## Pi prerequisites
 
@@ -89,10 +92,12 @@ The systemd unit uses environment variables:
 - `PROLINK_ONAIR_MIDI_CAPTURE_BIN`: defaults to `aseqdump`
 - `PROLINK_ONAIR_CONFIG_PATH`: defaults to `config.json`
 - `PROLINK_ONAIR_STATUS_PATH`: defaults to `/tmp/pi-prolink-onair-state.json`
+- `PROLINK_METADATA_LOG_PATH`: defaults to `/tmp/pi-prolink-metadata.jsonl`
 - `PROLINK_ONAIR_MIDI_PORT`: defaults to `24:0`
 - `PROLINK_ONAIR_MIDI_PORT_HINT`: defaults to `XONE:96`
 - `PROLINK_ONAIR_THRESHOLD`: defaults to `1`
 - `PROLINK_ONAIR_CHANNEL_TO_PLAYER`: defaults to `2:2,3:3`
+- `PROLINK_VIRTUAL_PLAYER_NUMBER`: defaults to `4`
 - `PROLINK_ONAIR_REPEAT_MS`: defaults to `1000`
 
 When `PROLINK_ONAIR_CONFIG_PATH` points at the recorder app's `config.json`,
@@ -103,6 +108,8 @@ the sidecar reads these shared app settings and reloads them while running:
 - `prolink_onair_enabled`
 - `prolink_onair_threshold`
 - `prolink_onair_channel_to_player`
+- `prolink_metadata_enabled`
+- `prolink_virtual_player_number`
 
 If the CDJ lights flicker because the fader sends tiny non-zero noise at the
 bottom, raise `PROLINK_ONAIR_THRESHOLD` to `2`.

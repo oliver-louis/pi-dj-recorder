@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from app.services.errors import TrackIdExportError
 from app.services.recordings_store import RecordingsStore
@@ -10,7 +12,13 @@ class TrackIdExporter:
     def __init__(self, store: RecordingsStore) -> None:
         self.store = store
 
-    def export_for_recording(self, filename: str, *, merge_gap_seconds: float = 10.0) -> tuple[str, bytes]:
+    def export_for_recording(
+        self,
+        filename: str,
+        *,
+        merge_gap_seconds: float = 10.0,
+        metadata_log_path: Path | None = None,
+    ) -> tuple[str, bytes]:
         path = self.store.onair_log_path_for_recording(filename)
         try:
             events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -20,18 +28,40 @@ class TrackIdExporter:
             raise TrackIdExportError("On-air log is empty.")
 
         sessions = self.track_sessions_from_onair_events(events, merge_gap_seconds=merge_gap_seconds)
+        recording_started_at = self.recording_started_at(events)
+        metadata_events = self.metadata_events(metadata_log_path)
         export_payload = [
-            {
-                "title": self.track_title_for_channel(session["channel"]),
-                "artist": "",
-                "links": {},
-                "start": self.format_track_time(float(session["start"])),
-                "end": self.format_track_time(float(session["end"])),
-            }
+            self.track_id_payload_for_session(
+                session,
+                metadata_events=metadata_events,
+                recording_started_at=recording_started_at,
+            )
             for session in sessions
         ]
         export_name = f"{filename[:-4]}.track-ids.json"
         return export_name, json.dumps(export_payload, indent=2).encode("utf-8")
+
+    def track_id_payload_for_session(
+        self,
+        session: dict[str, float | int],
+        *,
+        metadata_events: list[dict[str, object]],
+        recording_started_at: datetime | None,
+    ) -> dict[str, object]:
+        channel = int(session["channel"])
+        match = self.metadata_for_session(
+            channel,
+            float(session["start"]),
+            metadata_events=metadata_events,
+            recording_started_at=recording_started_at,
+        )
+        return {
+            "title": str(match.get("title") or self.track_title_for_channel(channel)) if match else self.track_title_for_channel(channel),
+            "artist": str(match.get("artist") or "") if match else "",
+            "links": {},
+            "start": self.format_track_time(float(session["start"])),
+            "end": self.format_track_time(float(session["end"])),
+        }
 
     @staticmethod
     def track_title_for_channel(channel: int) -> str:
@@ -117,6 +147,74 @@ class TrackIdExporter:
         if not sessions:
             raise TrackIdExportError("No track sessions could be inferred from the on-air log.")
         return sessions
+
+    @staticmethod
+    def recording_started_at(events: list[dict[str, object]]) -> datetime | None:
+        for event in events:
+            if event.get("type") != "midi_logging_started":
+                continue
+            ts_utc = event.get("ts_utc")
+            if not isinstance(ts_utc, str):
+                return None
+            try:
+                return datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def metadata_events(path: Path | None) -> list[dict[str, object]]:
+        if path is None or not path.is_file():
+            return []
+        events: list[dict[str, object]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "track_loaded":
+                events.append(event)
+        return events
+
+    def metadata_for_session(
+        self,
+        channel: int,
+        start_seconds: float,
+        *,
+        metadata_events: list[dict[str, object]],
+        recording_started_at: datetime | None,
+    ) -> dict[str, object] | None:
+        if recording_started_at is None:
+            return None
+        session_started_at = recording_started_at + timedelta(seconds=start_seconds)
+        best: tuple[datetime, dict[str, object]] | None = None
+        for event in metadata_events:
+            if event.get("channel") != channel:
+                continue
+            title = event.get("title")
+            artist = event.get("artist")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            if artist is not None and not isinstance(artist, str):
+                continue
+            ts_utc = event.get("ts_utc")
+            if not isinstance(ts_utc, str):
+                continue
+            try:
+                event_time = datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if event_time > session_started_at:
+                continue
+            if best is None or event_time > best[0]:
+                best = (event_time, event)
+        return best[1] if best else None
 
     @staticmethod
     def event_time_seconds(event: dict[str, object]) -> float:

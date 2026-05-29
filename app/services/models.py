@@ -13,6 +13,7 @@ class RecordingStatus:
     current_file_size: int
     device_available: bool
     device_error: str | None
+    prolink_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

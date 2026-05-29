@@ -55,6 +55,7 @@ class Recorder:
         midi_port_name_hint: str = "XONE:96",
         config_path: Path | None = None,
         prolink_status_path: Path | None = None,
+        prolink_metadata_log_path: Path | None = None,
         onair_threshold: int = 30,
         stop_timeout_seconds: float = 15.0,
         process_start_grace_seconds: float = 0.35,
@@ -76,6 +77,8 @@ class Recorder:
                 prolink_onair_enabled=True,
                 prolink_onair_threshold=1,
                 prolink_onair_channel_to_player={"2": 2, "3": 3},
+                prolink_metadata_enabled=True,
+                prolink_virtual_player_number=4,
                 default_mix_prefix="mix",
                 track_id_merge_gap_seconds=10.0,
                 auto_enable_metering=False,
@@ -93,6 +96,8 @@ class Recorder:
         self.onair_threshold = max(0, min(127, int(loaded_settings.onair_threshold)))
         self.prolink_onair_enabled = bool(loaded_settings.prolink_onair_enabled)
         self.prolink_onair_threshold = max(0, min(127, int(loaded_settings.prolink_onair_threshold)))
+        self.prolink_metadata_enabled = bool(loaded_settings.prolink_metadata_enabled)
+        self.prolink_virtual_player_number = max(1, min(4, int(loaded_settings.prolink_virtual_player_number)))
         try:
             self.prolink_onair_channel_to_player = self._normalize_prolink_mapping(
                 loaded_settings.prolink_onair_channel_to_player
@@ -111,6 +116,7 @@ class Recorder:
         self.device_check_cache_seconds = device_check_cache_seconds
         self.device_check_enabled = device_check_enabled
         self.prolink_status_path = Path(prolink_status_path or "/tmp/pi-prolink-onair-state.json")
+        self.prolink_metadata_log_path = Path(prolink_metadata_log_path or "/tmp/pi-prolink-metadata.jsonl")
         self._lock = threading.RLock()
 
         self._store = RecordingsStore(self.recordings_dir)
@@ -327,7 +333,11 @@ class Recorder:
         return self._store.onair_log_path_for_recording(filename)
 
     def track_ids_export_for_recording(self, filename: str) -> tuple[str, bytes]:
-        return self._track_ids.export_for_recording(filename, merge_gap_seconds=self.track_id_merge_gap_seconds)
+        return self._track_ids.export_for_recording(
+            filename,
+            merge_gap_seconds=self.track_id_merge_gap_seconds,
+            metadata_log_path=self.prolink_metadata_log_path,
+        )
 
     def settings_payload(self) -> dict[str, object]:
         with self._lock:
@@ -361,6 +371,8 @@ class Recorder:
         prolink_onair_enabled: bool,
         prolink_onair_threshold: int,
         prolink_onair_channel_to_player: dict[str, int],
+        prolink_metadata_enabled: bool,
+        prolink_virtual_player_number: int,
     ) -> dict[str, object]:
         with self._lock:
             self._clear_if_process_exited_locked()
@@ -377,6 +389,8 @@ class Recorder:
                 raise ValueError("On-air threshold must be between 0 and 127.")
             if not 0 <= int(prolink_onair_threshold) <= 127:
                 raise ValueError("Pro DJ Link on-air threshold must be between 0 and 127.")
+            if not 1 <= int(prolink_virtual_player_number) <= 4:
+                raise ValueError("Pro DJ Link virtual player number must be between 1 and 4.")
             if not 0 <= float(track_id_merge_gap_seconds) <= 30:
                 raise ValueError("Track ID merge gap must be between 0 and 30 seconds.")
             if not 0 <= int(stop_discard_countdown_seconds) <= 15:
@@ -403,6 +417,8 @@ class Recorder:
             self.prolink_onair_channel_to_player = self._normalize_prolink_mapping(
                 prolink_onair_channel_to_player
             )
+            self.prolink_metadata_enabled = bool(prolink_metadata_enabled)
+            self.prolink_virtual_player_number = int(prolink_virtual_player_number)
             self.default_mix_prefix = default_mix_prefix
             self.track_id_merge_gap_seconds = float(track_id_merge_gap_seconds)
             self.auto_enable_metering = bool(auto_enable_metering)
@@ -427,6 +443,8 @@ class Recorder:
                     prolink_onair_enabled=self.prolink_onair_enabled,
                     prolink_onair_threshold=self.prolink_onair_threshold,
                     prolink_onair_channel_to_player=self.prolink_onair_channel_to_player,
+                    prolink_metadata_enabled=self.prolink_metadata_enabled,
+                    prolink_virtual_player_number=self.prolink_virtual_player_number,
                     default_mix_prefix=self.default_mix_prefix,
                     track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
                     auto_enable_metering=self.auto_enable_metering,
@@ -511,6 +529,7 @@ class Recorder:
             pid_override=pid_override,
             device_available=device_available,
             device_error=device_error,
+            prolink_metadata=self._prolink_live_metadata_payload(),
         )
 
     def _settings_editability_locked(self) -> tuple[bool, str | None]:
@@ -529,6 +548,8 @@ class Recorder:
             prolink_onair_enabled=self.prolink_onair_enabled,
             prolink_onair_threshold=self.prolink_onair_threshold,
             prolink_onair_channel_to_player=self.prolink_onair_channel_to_player,
+            prolink_metadata_enabled=self.prolink_metadata_enabled,
+            prolink_virtual_player_number=self.prolink_virtual_player_number,
             default_mix_prefix=self.default_mix_prefix,
             track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
             auto_enable_metering=self.auto_enable_metering,
@@ -555,6 +576,7 @@ class Recorder:
             "metering_active": self._runtime._metering_enabled,
             "config_path": str(self.config_path),
             "prolink_status_path": str(self.prolink_status_path),
+            "prolink_metadata_log_path": str(self.prolink_metadata_log_path),
             "prolink_onair": self._prolink_status_payload(),
         }
 
@@ -583,6 +605,17 @@ class Recorder:
             return {"available": False, "error": "Status file did not contain an object."}
         raw["available"] = True
         return raw
+
+    def _prolink_live_metadata_payload(self) -> dict[str, object]:
+        status = self._prolink_status_payload()
+        players = status.get("players")
+        if not isinstance(players, dict):
+            return {}
+        return {
+            str(player): metadata
+            for player, metadata in players.items()
+            if isinstance(metadata, dict)
+        }
 
     def _file_size(self, path: Path | None) -> int:
         return self._runtime.file_size(path)
