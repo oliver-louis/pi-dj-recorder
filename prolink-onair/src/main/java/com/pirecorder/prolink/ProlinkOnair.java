@@ -2,6 +2,9 @@ package com.pirecorder.prolink;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.deepsymmetry.beatlink.CdjStatus;
+import org.deepsymmetry.beatlink.DeviceUpdate;
+import org.deepsymmetry.beatlink.Util;
 import org.deepsymmetry.beatlink.VirtualCdj;
 import org.deepsymmetry.beatlink.data.SearchableItem;
 import org.deepsymmetry.beatlink.data.TrackMetadata;
@@ -45,6 +48,7 @@ public final class ProlinkOnair {
     private final Set<Integer> playersOnAir = new TreeSet<>();
     private final Map<Integer, Integer> lastValuesByChannel = new HashMap<>();
     private final Map<Integer, Map<String, Object>> playerMetadata = new HashMap<>();
+    private final Map<Integer, Map<String, Object>> playerPlayback = new HashMap<>();
     private final Map<Integer, String> playerMetadataSignatures = new HashMap<>();
     private volatile RuntimeConfig config;
     private volatile Process midiProcess;
@@ -67,6 +71,7 @@ public final class ProlinkOnair {
         VirtualCdj virtualCdj = VirtualCdj.getInstance();
         virtualCdj.setDeviceName(config.virtualCdjName);
         virtualCdj.setUseStandardPlayerNumber(true);
+        virtualCdj.addUpdateListener(this::handleDeviceUpdate);
         virtualCdj.start((byte) config.virtualPlayerNumber);
         System.out.printf(
                 "Virtual CDJ online as player %d using %s -> %s%n",
@@ -203,6 +208,29 @@ public final class ProlinkOnair {
         }
     }
 
+    private void handleDeviceUpdate(DeviceUpdate update) {
+        RuntimeConfig current = config;
+        int player = update.getDeviceNumber();
+        Integer channel = current.playerToChannel().get(player);
+        if (channel == null) {
+            return;
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("player", player);
+        payload.put("channel", channel);
+        payload.put("play_state", playState(update));
+        payload.put("playing", playing(update));
+        payload.put("is_master", update.isTempoMaster());
+        payload.put("synced", update.isSynced());
+        payload.put("bpm", normalizedBpm(update));
+        payload.put("pitch_percent", Util.pitchToPercentage(update.getPitch()));
+        payload.put("updated_at", Instant.now().toString());
+        synchronized (playerPlayback) {
+            playerPlayback.put(player, payload);
+        }
+        writeStatus();
+    }
+
     private Map<String, Object> metadataPayload(int player, int channel, TrackMetadata metadata) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "track_loaded");
@@ -262,6 +290,20 @@ public final class ProlinkOnair {
             playerMetadata.putAll(next);
             playerMetadataSignatures.clear();
             playerMetadataSignatures.putAll(nextSignatures);
+        }
+        synchronized (playerPlayback) {
+            Map<Integer, Map<String, Object>> next = new HashMap<>();
+            for (Map.Entry<Integer, Map<String, Object>> entry : playerPlayback.entrySet()) {
+                Integer channel = current.playerToChannel().get(entry.getKey());
+                if (channel == null) {
+                    continue;
+                }
+                Map<String, Object> playback = new LinkedHashMap<>(entry.getValue());
+                playback.put("channel", channel);
+                next.put(entry.getKey(), playback);
+            }
+            playerPlayback.clear();
+            playerPlayback.putAll(next);
         }
     }
 
@@ -428,7 +470,7 @@ public final class ProlinkOnair {
             payload.put("last_values", new HashMap<>(lastValuesByChannel));
         }
         synchronized (playerMetadata) {
-            payload.put("players", new TreeMapStringKeys(playerMetadata).asMap());
+            payload.put("players", mergedPlayerStatus());
         }
         payload.put("updated_at", Instant.now().toString());
         try {
@@ -465,6 +507,60 @@ public final class ProlinkOnair {
 
     private static String metadataSignature(Map<String, Object> payload) {
         return payload.get("player") + ":" + payload.get("channel") + ":" + payload.get("artist") + ":" + payload.get("title") + ":" + payload.get("rekordbox_id");
+    }
+
+    private Map<String, Object> mergedPlayerStatus() {
+        Map<Integer, Map<String, Object>> merged = new HashMap<>();
+        synchronized (playerMetadata) {
+            for (Map.Entry<Integer, Map<String, Object>> entry : playerMetadata.entrySet()) {
+                merged.put(entry.getKey(), new LinkedHashMap<>(entry.getValue()));
+            }
+        }
+        synchronized (playerPlayback) {
+            for (Map.Entry<Integer, Map<String, Object>> entry : playerPlayback.entrySet()) {
+                Map<String, Object> player = merged.computeIfAbsent(entry.getKey(), ignored -> new LinkedHashMap<>());
+                player.putAll(entry.getValue());
+            }
+        }
+        return new TreeMapStringKeys(merged).asMap();
+    }
+
+    private static String playState(DeviceUpdate update) {
+        if (update instanceof CdjStatus) {
+            String raw = ((CdjStatus) update).getPlayState1().toString();
+            if (raw.contains("PLAYING")) {
+                return "Playing";
+            }
+            if (raw.contains("CUE")) {
+                return "Cue";
+            }
+            if (raw.contains("PAUSED")) {
+                return "Paused";
+            }
+            return titleCase(raw);
+        }
+        return playing(update) ? "Playing" : "Paused";
+    }
+
+    private static boolean playing(DeviceUpdate update) {
+        if (update instanceof CdjStatus) {
+            String raw = ((CdjStatus) update).getPlayState1().toString();
+            return raw.contains("PLAYING") || raw.contains("LOOPING");
+        }
+        return update.getBpm() > 0 && update.getBpm() != 65535;
+    }
+
+    private static Double normalizedBpm(DeviceUpdate update) {
+        double bpm = update.getEffectiveTempo();
+        if (!Double.isFinite(bpm) || bpm <= 0 || update.getBpm() == 65535) {
+            return null;
+        }
+        return Math.round(bpm * 10.0) / 10.0;
+    }
+
+    private static String titleCase(String raw) {
+        String lower = raw.replace('_', ' ').toLowerCase();
+        return lower.isEmpty() ? lower : Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }
 
     private static final class TreeMapStringKeys {

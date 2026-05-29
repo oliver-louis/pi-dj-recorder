@@ -215,8 +215,14 @@ function updateProlinkMetadata(players) {
     const metadata = players[String(player)] || players[player] || {};
     const title = document.getElementById(`prolink-player-${player}-title`);
     const artist = document.getElementById(`prolink-player-${player}-artist`);
+    const state = document.getElementById(`prolink-player-${player}-state`);
+    const bpm = document.getElementById(`prolink-player-${player}-bpm`);
+    const master = document.getElementById(`prolink-player-${player}-master`);
     if (title) title.textContent = metadata.title || "-";
     if (artist) artist.textContent = metadata.artist || "-";
+    if (state) state.textContent = metadata.play_state || (metadata.playing ? "Playing" : "Idle");
+    if (bpm) bpm.textContent = Number.isFinite(Number(metadata.bpm)) ? `${Number(metadata.bpm).toFixed(1)} BPM` : "- BPM";
+    if (master) master.hidden = !metadata.is_master;
   });
 }
 

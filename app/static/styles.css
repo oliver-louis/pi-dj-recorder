@@ -347,7 +347,7 @@ dd {
 }
 
 .prolink-channel,
-.prolink-player span:last-child {
+.prolink-player > span:not(.prolink-state-line) {
   min-width: 0;
   color: var(--muted);
   font-size: 0.76rem;
@@ -362,6 +362,27 @@ dd {
   font-size: 0.9rem;
   overflow-wrap: anywhere;
   line-height: 1.2;
+}
+
+.prolink-state-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.prolink-master {
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--panel);
+  background: var(--green);
+  font-size: 0.58rem;
+  line-height: 1;
 }
 
 input {
@@ -1303,7 +1324,7 @@ button:disabled {
   }
 
   .prolink-channel,
-  .prolink-player span:last-child {
+  .prolink-player > span:not(.prolink-state-line) {
     font-size: 0.7rem;
   }
 
