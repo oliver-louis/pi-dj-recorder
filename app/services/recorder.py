@@ -54,6 +54,7 @@ class Recorder:
         midi_port: str = "16:0",
         midi_port_name_hint: str = "XONE:96",
         config_path: Path | None = None,
+        prolink_status_path: Path | None = None,
         onair_threshold: int = 30,
         stop_timeout_seconds: float = 15.0,
         process_start_grace_seconds: float = 0.35,
@@ -72,6 +73,9 @@ class Recorder:
                 midi_port_name_hint=midi_port_name_hint,
                 input_device=input_device,
                 onair_threshold=onair_threshold,
+                prolink_onair_enabled=True,
+                prolink_onair_threshold=1,
+                prolink_onair_channel_to_player={"2": 2, "3": 3},
                 default_mix_prefix="mix",
                 track_id_merge_gap_seconds=10.0,
                 auto_enable_metering=False,
@@ -87,6 +91,14 @@ class Recorder:
         self.midi_port = loaded_settings.midi_port
         self.midi_port_name_hint = loaded_settings.midi_port_name_hint
         self.onair_threshold = max(0, min(127, int(loaded_settings.onair_threshold)))
+        self.prolink_onair_enabled = bool(loaded_settings.prolink_onair_enabled)
+        self.prolink_onair_threshold = max(0, min(127, int(loaded_settings.prolink_onair_threshold)))
+        try:
+            self.prolink_onair_channel_to_player = self._normalize_prolink_mapping(
+                loaded_settings.prolink_onair_channel_to_player
+            )
+        except ValueError:
+            self.prolink_onair_channel_to_player = {"2": 2, "3": 3}
         self.default_mix_prefix = loaded_settings.default_mix_prefix
         self.track_id_merge_gap_seconds = loaded_settings.track_id_merge_gap_seconds
         self.auto_enable_metering = loaded_settings.auto_enable_metering
@@ -98,6 +110,7 @@ class Recorder:
         self.device_check_timeout_seconds = device_check_timeout_seconds
         self.device_check_cache_seconds = device_check_cache_seconds
         self.device_check_enabled = device_check_enabled
+        self.prolink_status_path = Path(prolink_status_path or "/tmp/pi-prolink-onair-state.json")
         self._lock = threading.RLock()
 
         self._store = RecordingsStore(self.recordings_dir)
@@ -345,6 +358,9 @@ class Recorder:
         theme: str,
         confirm_delete_recordings: bool,
         stop_discard_countdown_seconds: int,
+        prolink_onair_enabled: bool,
+        prolink_onair_threshold: int,
+        prolink_onair_channel_to_player: dict[str, int],
     ) -> dict[str, object]:
         with self._lock:
             self._clear_if_process_exited_locked()
@@ -359,6 +375,8 @@ class Recorder:
                 raise ValueError("Invalid theme.")
             if not 0 <= int(onair_threshold) <= 127:
                 raise ValueError("On-air threshold must be between 0 and 127.")
+            if not 0 <= int(prolink_onair_threshold) <= 127:
+                raise ValueError("Pro DJ Link on-air threshold must be between 0 and 127.")
             if not 0 <= float(track_id_merge_gap_seconds) <= 30:
                 raise ValueError("Track ID merge gap must be between 0 and 30 seconds.")
             if not 0 <= int(stop_discard_countdown_seconds) <= 15:
@@ -380,6 +398,11 @@ class Recorder:
             self.midi_port_name_hint = str(midi_match["name_hint"])
             self.input_device = input_device
             self.onair_threshold = int(onair_threshold)
+            self.prolink_onair_enabled = bool(prolink_onair_enabled)
+            self.prolink_onair_threshold = int(prolink_onair_threshold)
+            self.prolink_onair_channel_to_player = self._normalize_prolink_mapping(
+                prolink_onair_channel_to_player
+            )
             self.default_mix_prefix = default_mix_prefix
             self.track_id_merge_gap_seconds = float(track_id_merge_gap_seconds)
             self.auto_enable_metering = bool(auto_enable_metering)
@@ -401,6 +424,9 @@ class Recorder:
                     midi_port_name_hint=self.midi_port_name_hint,
                     input_device=self.input_device,
                     onair_threshold=self.onair_threshold,
+                    prolink_onair_enabled=self.prolink_onair_enabled,
+                    prolink_onair_threshold=self.prolink_onair_threshold,
+                    prolink_onair_channel_to_player=self.prolink_onair_channel_to_player,
                     default_mix_prefix=self.default_mix_prefix,
                     track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
                     auto_enable_metering=self.auto_enable_metering,
@@ -500,6 +526,9 @@ class Recorder:
             midi_port_name_hint=self.midi_port_name_hint,
             input_device=self.input_device,
             onair_threshold=self.onair_threshold,
+            prolink_onair_enabled=self.prolink_onair_enabled,
+            prolink_onair_threshold=self.prolink_onair_threshold,
+            prolink_onair_channel_to_player=self.prolink_onair_channel_to_player,
             default_mix_prefix=self.default_mix_prefix,
             track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
             auto_enable_metering=self.auto_enable_metering,
@@ -525,7 +554,35 @@ class Recorder:
             "recording": self._runtime.process is not None,
             "metering_active": self._runtime._metering_enabled,
             "config_path": str(self.config_path),
+            "prolink_status_path": str(self.prolink_status_path),
+            "prolink_onair": self._prolink_status_payload(),
         }
+
+    @staticmethod
+    def _normalize_prolink_mapping(mapping: dict[str, int]) -> dict[str, int]:
+        normalized: dict[str, int] = {}
+        for channel in ("2", "3"):
+            value = mapping.get(channel)
+            try:
+                player = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("Pro DJ Link player mappings must be numbers.") from None
+            if not 1 <= player <= 6:
+                raise ValueError("Pro DJ Link player mappings must be between 1 and 6.")
+            normalized[channel] = player
+        return normalized
+
+    def _prolink_status_payload(self) -> dict[str, object]:
+        try:
+            raw = json.loads(self.prolink_status_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"available": False, "error": "Status file not found."}
+        except (json.JSONDecodeError, OSError) as exc:
+            return {"available": False, "error": str(exc)}
+        if not isinstance(raw, dict):
+            return {"available": False, "error": "Status file did not contain an object."}
+        raw["available"] = True
+        return raw
 
     def _file_size(self, path: Path | None) -> int:
         return self._runtime.file_size(path)

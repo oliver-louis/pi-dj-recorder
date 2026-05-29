@@ -72,14 +72,65 @@
             </label>
 
             <label class="field">
-              <span class="field-header">
-                <span>On-air threshold</span>
-                <button class="help-trigger" type="button" aria-label="About on-air threshold" aria-expanded="false">
+                <span class="field-header">
+                <span>Recorder on-air threshold</span>
+                <button class="help-trigger" type="button" aria-label="About recorder on-air threshold" aria-expanded="false">
                   <span aria-hidden="true">i</span>
                 </button>
-                <span class="help-bubble" role="tooltip">A channel counts as on-air when its MIDI fader value is at or above this threshold. The current default behavior is 30.</span>
+                <span class="help-bubble" role="tooltip">A channel counts as on-air in recording logs when its MIDI fader value is at or above this threshold.</span>
               </span>
               <input id="settings-onair-threshold" type="number" min="0" max="127" step="1">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Pro DJ Link On-Air</h3>
+            <p>Drive CDJ on-air indicators from Xone faders using the selected MIDI input.</p>
+          </div>
+          <label class="toggle-field">
+            <input id="settings-prolink-enabled" type="checkbox">
+            <span class="field-header inline">
+              <span>Enable CDJ on-air lighting</span>
+              <button class="help-trigger" type="button" aria-label="About Pro DJ Link on-air lighting" aria-expanded="false">
+                <span aria-hidden="true">i</span>
+              </button>
+              <span class="help-bubble" role="tooltip">The separate Pro DJ Link service reads the same MIDI input and lights mapped CDJs when their faders are up.</span>
+            </span>
+          </label>
+          <div class="settings-grid">
+            <label class="field">
+              <span class="field-header">
+                <span>CDJ lighting threshold</span>
+                <button class="help-trigger" type="button" aria-label="About CDJ lighting threshold" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">A low threshold makes the CDJ red as soon as the mapped fader is above the bottom.</span>
+              </span>
+              <input id="settings-prolink-threshold" type="number" min="0" max="127" step="1">
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>Xone CH2 lights player</span>
+                <button class="help-trigger" type="button" aria-label="About Xone CH2 mapping" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">The CDJ player number that should show on-air when mixer channel 2 is up.</span>
+              </span>
+              <input id="settings-prolink-ch2-player" type="number" min="1" max="6" step="1">
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>Xone CH3 lights player</span>
+                <button class="help-trigger" type="button" aria-label="About Xone CH3 mapping" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">The CDJ player number that should show on-air when mixer channel 3 is up.</span>
+              </span>
+              <input id="settings-prolink-ch3-player" type="number" min="1" max="6" step="1">
             </label>
           </div>
         </section>

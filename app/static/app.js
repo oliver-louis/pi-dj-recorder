@@ -6,6 +6,9 @@ const DEFAULT_SETTINGS = {
   midi_port_name_hint: "XONE:96",
   input_device: "plughw:X2,0",
   onair_threshold: 30,
+  prolink_onair_enabled: true,
+  prolink_onair_threshold: 1,
+  prolink_onair_channel_to_player: { 2: 2, 3: 3 },
   default_mix_prefix: "mix",
   track_id_merge_gap_seconds: 10,
   auto_enable_metering: false,
@@ -845,6 +848,10 @@ function updateSettingsPage(payload) {
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
   const thresholdInput = document.getElementById("settings-onair-threshold");
+  const prolinkEnabledInput = document.getElementById("settings-prolink-enabled");
+  const prolinkThresholdInput = document.getElementById("settings-prolink-threshold");
+  const prolinkCh2Input = document.getElementById("settings-prolink-ch2-player");
+  const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -859,6 +866,10 @@ function updateSettingsPage(payload) {
     !midiSelect ||
     !audioSelect ||
     !thresholdInput ||
+    !prolinkEnabledInput ||
+    !prolinkThresholdInput ||
+    !prolinkCh2Input ||
+    !prolinkCh3Input ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -874,6 +885,11 @@ function updateSettingsPage(payload) {
   buildDeviceOptions(midiSelect, payload.midi_devices || [], settings.midi_port || "", Boolean(payload.midi_selected_available));
   buildDeviceOptions(audioSelect, payload.audio_devices || [], settings.input_device || "", Boolean(payload.audio_selected_available));
   thresholdInput.value = String(settings.onair_threshold ?? 30);
+  prolinkEnabledInput.checked = settings.prolink_onair_enabled !== false;
+  prolinkThresholdInput.value = String(settings.prolink_onair_threshold ?? 1);
+  const prolinkMapping = settings.prolink_onair_channel_to_player || {};
+  prolinkCh2Input.value = String(prolinkMapping["2"] ?? prolinkMapping[2] ?? 2);
+  prolinkCh3Input.value = String(prolinkMapping["3"] ?? prolinkMapping[3] ?? 3);
   prefixInput.value = settings.default_mix_prefix || "mix";
   mergeGapInput.value = String(settings.track_id_merge_gap_seconds ?? 10);
   autoMeteringInput.checked = Boolean(settings.auto_enable_metering);
@@ -885,6 +901,10 @@ function updateSettingsPage(payload) {
   midiSelect.disabled = !editable;
   audioSelect.disabled = !editable;
   thresholdInput.disabled = !editable;
+  prolinkEnabledInput.disabled = !editable;
+  prolinkThresholdInput.disabled = !editable;
+  prolinkCh2Input.disabled = !editable;
+  prolinkCh3Input.disabled = !editable;
   prefixInput.disabled = !editable;
   mergeGapInput.disabled = !editable;
   autoMeteringInput.disabled = !editable;
@@ -907,6 +927,9 @@ function updateSettingsPage(payload) {
 
   if (debugRoot) {
     const debug = payload.debug || {};
+    const prolink = debug.prolink_onair || {};
+    const prolinkMapping = prolink.mapping || {};
+    const prolinkValues = prolink.last_values || {};
     debugRoot.innerHTML = "";
     [
       ["Selected MIDI", debug.selected_midi_device || "-"],
@@ -920,6 +943,14 @@ function updateSettingsPage(payload) {
       ["Recording", debug.recording ? "Active" : "Idle"],
       ["Metering", debug.metering_active ? "Active" : "Idle"],
       ["Config path", debug.config_path || "-"],
+      ["Pro Link service", prolink.available ? (prolink.online ? "Online" : "Offline") : "No status"],
+      ["Pro Link error", prolink.error || "-"],
+      ["Pro Link MIDI", prolink.resolved_midi_port || prolink.selected_midi_port || "-"],
+      ["Pro Link threshold", String(prolink.threshold ?? settings.prolink_onair_threshold ?? 1)],
+      ["Pro Link mapping", Object.keys(prolinkMapping).length ? JSON.stringify(prolinkMapping) : JSON.stringify(settings.prolink_onair_channel_to_player || {})],
+      ["Pro Link on-air players", Array.isArray(prolink.players_on_air) ? prolink.players_on_air.join(", ") || "-" : "-"],
+      ["Pro Link fader values", Object.keys(prolinkValues).length ? JSON.stringify(prolinkValues) : "-"],
+      ["Pro Link status path", debug.prolink_status_path || "-"],
     ].forEach(([label, value]) => {
       const row = document.createElement("div");
       row.className = "debug-row";
@@ -947,6 +978,10 @@ async function saveSettings() {
   const midiSelect = document.getElementById("settings-midi-port");
   const audioSelect = document.getElementById("settings-audio-device");
   const thresholdInput = document.getElementById("settings-onair-threshold");
+  const prolinkEnabledInput = document.getElementById("settings-prolink-enabled");
+  const prolinkThresholdInput = document.getElementById("settings-prolink-threshold");
+  const prolinkCh2Input = document.getElementById("settings-prolink-ch2-player");
+  const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
@@ -957,6 +992,10 @@ async function saveSettings() {
     !midiSelect ||
     !audioSelect ||
     !thresholdInput ||
+    !prolinkEnabledInput ||
+    !prolinkThresholdInput ||
+    !prolinkCh2Input ||
+    !prolinkCh3Input ||
     !prefixInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
@@ -973,6 +1012,12 @@ async function saveSettings() {
         midi_port: midiSelect.value,
         input_device: audioSelect.value,
         onair_threshold: Number(thresholdInput.value),
+        prolink_onair_enabled: prolinkEnabledInput.checked,
+        prolink_onair_threshold: Number(prolinkThresholdInput.value),
+        prolink_onair_channel_to_player: {
+          2: Number(prolinkCh2Input.value),
+          3: Number(prolinkCh3Input.value),
+        },
         default_mix_prefix: prefixInput.value.trim(),
         track_id_merge_gap_seconds: Number(mergeGapInput.value),
         auto_enable_metering: autoMeteringInput.checked,

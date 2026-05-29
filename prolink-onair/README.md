@@ -9,15 +9,15 @@ recording service is stopped or restarted.
 
 Default mapping:
 
-- Xone CH2 -> CDJ Player 1
-- Xone CH3 -> CDJ Player 2
+- Xone CH2 -> CDJ Player 2
+- Xone CH3 -> CDJ Player 3
 - fader MIDI value `>= 1` counts as on-air
 
 ## Pi prerequisites
 
 ```bash
 sudo apt update
-sudo apt install -y openjdk-17-jre-headless maven alsa-utils
+sudo apt install -y openjdk-21-jdk-headless maven alsa-utils
 ```
 
 Make sure the Pro DJ Link interface has a persistent link-local address and no
@@ -56,7 +56,7 @@ Run the bridge in the foreground:
 
 ```bash
 cd /home/copper/pi-dj-recorder
-PROLINK_ONAIR_CHANNEL_TO_PLAYER=2:1,3:2 \
+PROLINK_ONAIR_CHANNEL_TO_PLAYER=2:2,3:3 \
 PROLINK_ONAIR_THRESHOLD=1 \
 java -jar prolink-onair/target/prolink-onair-0.1.0.jar
 ```
@@ -87,11 +87,22 @@ is unplugged and later returns.
 The systemd unit uses environment variables:
 
 - `PROLINK_ONAIR_MIDI_CAPTURE_BIN`: defaults to `aseqdump`
-- `PROLINK_ONAIR_MIDI_PORT`: defaults to `16:0`
+- `PROLINK_ONAIR_CONFIG_PATH`: defaults to `config.json`
+- `PROLINK_ONAIR_STATUS_PATH`: defaults to `/tmp/pi-prolink-onair-state.json`
+- `PROLINK_ONAIR_MIDI_PORT`: defaults to `24:0`
 - `PROLINK_ONAIR_MIDI_PORT_HINT`: defaults to `XONE:96`
 - `PROLINK_ONAIR_THRESHOLD`: defaults to `1`
-- `PROLINK_ONAIR_CHANNEL_TO_PLAYER`: defaults to `2:1,3:2`
+- `PROLINK_ONAIR_CHANNEL_TO_PLAYER`: defaults to `2:2,3:3`
 - `PROLINK_ONAIR_REPEAT_MS`: defaults to `1000`
+
+When `PROLINK_ONAIR_CONFIG_PATH` points at the recorder app's `config.json`,
+the sidecar reads these shared app settings and reloads them while running:
+
+- `midi_port`
+- `midi_port_name_hint`
+- `prolink_onair_enabled`
+- `prolink_onair_threshold`
+- `prolink_onair_channel_to_player`
 
 If the CDJ lights flicker because the fader sends tiny non-zero noise at the
 bottom, raise `PROLINK_ONAIR_THRESHOLD` to `2`.

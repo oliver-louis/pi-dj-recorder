@@ -275,6 +275,9 @@ def test_settings_page_and_endpoint(tmp_path, monkeypatch):
     assert payload["editable"] is True
     assert payload["settings"]["midi_port"] == "16:0"
     assert payload["settings"]["onair_threshold"] == 30
+    assert payload["settings"]["prolink_onair_enabled"] is True
+    assert payload["settings"]["prolink_onair_threshold"] == 1
+    assert payload["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
     assert payload["settings"]["default_mix_prefix"] == "mix"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 10.0
     assert payload["settings"]["auto_enable_metering"] is False
@@ -311,6 +314,9 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
                 "midi_port": "24:0",
                 "input_device": "plughw:2,0",
                 "onair_threshold": 46,
+                "prolink_onair_enabled": False,
+                "prolink_onair_threshold": 2,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 5,
                 "auto_enable_metering": True,
@@ -326,6 +332,9 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
     assert response.json()["settings"]["midi_port"] == "24:0"
     assert response.json()["settings"]["input_device"] == "plughw:2,0"
     assert response.json()["settings"]["onair_threshold"] == 46
+    assert response.json()["settings"]["prolink_onair_enabled"] is False
+    assert response.json()["settings"]["prolink_onair_threshold"] == 2
+    assert response.json()["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
     assert response.json()["settings"]["default_mix_prefix"] == "vinyl"
     assert response.json()["settings"]["theme"] == "light"
 
@@ -340,6 +349,9 @@ def test_update_settings_rejects_invalid_selection(tmp_path, monkeypatch):
                 "midi_port": "99:9",
                 "input_device": "plughw:9,9",
                 "onair_threshold": 30,
+                "prolink_onair_enabled": True,
+                "prolink_onair_threshold": 1,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "mix",
                 "track_id_merge_gap_seconds": 10,
                 "auto_enable_metering": False,
@@ -380,6 +392,9 @@ def test_update_settings_rejects_while_busy(tmp_path, monkeypatch):
                 "midi_port": "24:0",
                 "input_device": "plughw:2,0",
                 "onair_threshold": 30,
+                "prolink_onair_enabled": True,
+                "prolink_onair_threshold": 1,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "mix",
                 "track_id_merge_gap_seconds": 10,
                 "auto_enable_metering": False,
@@ -404,6 +419,9 @@ def test_update_settings_rejects_invalid_values(tmp_path, monkeypatch):
                 "midi_port": "16:0",
                 "input_device": "plughw:X2,0",
                 "onair_threshold": 128,
+                "prolink_onair_enabled": True,
+                "prolink_onair_threshold": 128,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "",
                 "track_id_merge_gap_seconds": 31,
                 "auto_enable_metering": False,
@@ -442,6 +460,9 @@ def test_midi_state_reflects_updated_threshold(tmp_path, monkeypatch):
                 "midi_port": "16:0",
                 "input_device": "plughw:2,0",
                 "onair_threshold": 41,
+                "prolink_onair_enabled": True,
+                "prolink_onair_threshold": 1,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "mix",
                 "track_id_merge_gap_seconds": 10,
                 "auto_enable_metering": False,

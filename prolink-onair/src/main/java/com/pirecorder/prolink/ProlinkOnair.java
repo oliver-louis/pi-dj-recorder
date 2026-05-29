@@ -1,12 +1,18 @@
 package com.pirecorder.prolink;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.deepsymmetry.beatlink.VirtualCdj;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,25 +36,26 @@ public final class ProlinkOnair {
     private static final Pattern ASEQDUMP_ALT_CONTROL = Pattern.compile("\\bcontroller\\s+(\\d+)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern ASEQDUMP_ALT_VALUE = Pattern.compile("\\bvalue\\s+(\\d+)\\b", Pattern.CASE_INSENSITIVE);
 
-    private final Config config;
+    private final ObjectMapper mapper = new ObjectMapper();
     private final Set<Integer> playersOnAir = new TreeSet<>();
     private final Map<Integer, Integer> lastValuesByChannel = new HashMap<>();
-    private Process midiProcess;
+    private volatile RuntimeConfig config;
+    private volatile Process midiProcess;
+    private volatile boolean online = false;
+    private volatile String error = null;
+    private volatile String resolvedMidiPort = null;
 
-    private ProlinkOnair(Config config) {
+    private ProlinkOnair(RuntimeConfig config) {
         this.config = config;
     }
 
     public static void main(String[] args) throws Exception {
-        Config config = Config.fromEnvironment();
+        RuntimeConfig config = RuntimeConfig.load();
         new ProlinkOnair(config).run();
     }
 
     private void run() throws Exception {
-        String resolvedPort = resolveMidiPort();
-        System.out.printf(
-                "Starting prolink-onair at %s. MIDI port=%s, threshold=%d, mapping=%s%n",
-                Instant.now(), resolvedPort, config.threshold, config.channelToPlayer);
+        System.out.printf("Starting prolink-onair at %s. %s%n", Instant.now(), config.summary());
 
         VirtualCdj virtualCdj = VirtualCdj.getInstance();
         virtualCdj.setDeviceName(config.virtualCdjName);
@@ -59,14 +66,14 @@ public final class ProlinkOnair {
                 virtualCdj.getLocalAddress().getHostAddress(),
                 virtualCdj.getBroadcastAddress().getHostAddress());
 
-        ScheduledExecutorService repeater = Executors.newSingleThreadScheduledExecutor();
-        repeater.scheduleAtFixedRate(() -> sendOnAir(virtualCdj), 0, config.repeatMillis, TimeUnit.MILLISECONDS);
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> reloadConfig(virtualCdj), 1, 1, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(() -> sendOnAir(virtualCdj), 0, config.repeatMillis, TimeUnit.MILLISECONDS);
+        scheduler.scheduleAtFixedRate(this::writeStatus, 0, 1, TimeUnit.SECONDS);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            repeater.shutdownNow();
-            if (midiProcess != null) {
-                midiProcess.destroy();
-            }
+            scheduler.shutdownNow();
+            stopMidiProcess();
             try {
                 virtualCdj.sendOnAirCommand(Collections.emptySet());
             } catch (Exception ignored) {
@@ -75,14 +82,85 @@ public final class ProlinkOnair {
             virtualCdj.stop();
         }));
 
-        runMidiLoop(resolvedPort, virtualCdj);
+        while (true) {
+            RuntimeConfig current = config;
+            if (!current.enabled) {
+                online = false;
+                resolvedMidiPort = null;
+                TimeUnit.MILLISECONDS.sleep(500);
+                continue;
+            }
+            runMidiLoop(current, virtualCdj);
+            TimeUnit.MILLISECONDS.sleep(500);
+        }
     }
 
-    private String resolveMidiPort() throws IOException, InterruptedException {
-        Process process = new ProcessBuilder(config.midiCaptureBin, "-l")
+    private void reloadConfig(VirtualCdj virtualCdj) {
+        RuntimeConfig previous = config;
+        RuntimeConfig next = RuntimeConfig.load();
+        config = next;
+        if (!next.equivalentTo(previous)) {
+            System.out.printf("Reloaded prolink-onair config. %s%n", next.summary());
+            recomputePlayersOnAir(next);
+            sendOnAir(virtualCdj);
+            writeStatus();
+        }
+        if (!next.enabled) {
+            synchronized (playersOnAir) {
+                playersOnAir.clear();
+            }
+            sendOnAir(virtualCdj);
+            stopMidiProcess();
+            online = false;
+            error = null;
+            resolvedMidiPort = null;
+            return;
+        }
+        if (!next.midiPort.equals(previous.midiPort) || !next.midiPortNameHint.equals(previous.midiPortNameHint)) {
+            stopMidiProcess();
+        }
+    }
+
+    private void runMidiLoop(RuntimeConfig current, VirtualCdj virtualCdj) {
+        try {
+            String resolvedPort = resolveMidiPort(current);
+            resolvedMidiPort = resolvedPort;
+            ProcessBuilder builder = new ProcessBuilder(current.midiCaptureBin, "-p", resolvedPort);
+            builder.redirectErrorStream(true);
+            midiProcess = builder.start();
+            online = true;
+            error = null;
+            writeStatus();
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(midiProcess.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    RuntimeConfig active = config;
+                    if (!active.enabled || !active.midiPort.equals(current.midiPort)) {
+                        stopMidiProcess();
+                        return;
+                    }
+                    Optional<MidiControl> event = parseMidiControl(line);
+                    if (event.isPresent()) {
+                        handleMidiControl(event.get(), active, virtualCdj);
+                    }
+                }
+            }
+        } catch (Exception exc) {
+            online = false;
+            error = exc.getMessage();
+        } finally {
+            online = false;
+            midiProcess = null;
+            writeStatus();
+        }
+    }
+
+    private String resolveMidiPort(RuntimeConfig current) throws IOException, InterruptedException {
+        Process process = new ProcessBuilder(current.midiCaptureBin, "-l")
                 .redirectErrorStream(true)
                 .start();
-        String fallback = config.midiPort;
+        String fallback = current.midiPort;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -92,32 +170,16 @@ public final class ProlinkOnair {
                 }
                 String port = match.group(1);
                 String haystack = (match.group(2) + " " + match.group(3)).toLowerCase();
-                if (port.equals(config.midiPort)) {
+                if (port.equals(current.midiPort)) {
                     fallback = port;
                 }
-                if (!config.midiPortNameHint.isEmpty() && haystack.contains(config.midiPortNameHint.toLowerCase())) {
+                if (!current.midiPortNameHint.isEmpty() && haystack.contains(current.midiPortNameHint.toLowerCase())) {
                     return port;
                 }
             }
         }
         process.waitFor(3, TimeUnit.SECONDS);
         return fallback;
-    }
-
-    private void runMidiLoop(String midiPort, VirtualCdj virtualCdj) throws IOException {
-        ProcessBuilder builder = new ProcessBuilder(config.midiCaptureBin, "-p", midiPort);
-        builder.redirectErrorStream(true);
-        midiProcess = builder.start();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(midiProcess.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                Optional<MidiControl> event = parseMidiControl(line);
-                if (event.isEmpty()) {
-                    continue;
-                }
-                handleMidiControl(event.get(), virtualCdj);
-            }
-        }
     }
 
     private Optional<MidiControl> parseMidiControl(String line) {
@@ -143,34 +205,88 @@ public final class ProlinkOnair {
         return Optional.of(new MidiControl(Integer.parseInt(control.group(1)), Integer.parseInt(value.group(1))));
     }
 
-    private void handleMidiControl(MidiControl control, VirtualCdj virtualCdj) {
+    private void handleMidiControl(MidiControl control, RuntimeConfig active, VirtualCdj virtualCdj) {
         int mixerChannel = control.controller + 1;
-        Integer player = config.channelToPlayer.get(mixerChannel);
+        Integer player = active.channelToPlayer.get(mixerChannel);
         if (player == null) {
             return;
         }
 
         int clampedValue = Math.max(0, Math.min(127, control.value));
-        Integer previous = lastValuesByChannel.put(mixerChannel, clampedValue);
-        if (previous != null && previous == clampedValue) {
-            return;
+        boolean changed;
+        synchronized (playersOnAir) {
+            lastValuesByChannel.put(mixerChannel, clampedValue);
+            boolean onAir = clampedValue >= active.threshold;
+            changed = onAir ? playersOnAir.add(player) : playersOnAir.remove(player);
         }
-
-        boolean onAir = clampedValue >= config.threshold;
-        boolean changed = onAir ? playersOnAir.add(player) : playersOnAir.remove(player);
         if (!changed) {
+            writeStatus();
             return;
         }
 
-        System.out.printf("CH%d -> player %d %s (value=%d)%n", mixerChannel, player, onAir ? "ON" : "OFF", clampedValue);
+        System.out.printf("CH%d -> player %d %s (value=%d)%n", mixerChannel, player, clampedValue >= active.threshold ? "ON" : "OFF", clampedValue);
         sendOnAir(virtualCdj);
+        writeStatus();
+    }
+
+    private void recomputePlayersOnAir(RuntimeConfig active) {
+        synchronized (playersOnAir) {
+            playersOnAir.clear();
+            if (!active.enabled) {
+                return;
+            }
+            for (Map.Entry<Integer, Integer> entry : lastValuesByChannel.entrySet()) {
+                Integer player = active.channelToPlayer.get(entry.getKey());
+                if (player != null && entry.getValue() >= active.threshold) {
+                    playersOnAir.add(player);
+                }
+            }
+        }
     }
 
     private void sendOnAir(VirtualCdj virtualCdj) {
         try {
-            virtualCdj.sendOnAirCommand(new HashSet<>(playersOnAir));
+            Set<Integer> snapshot;
+            synchronized (playersOnAir) {
+                snapshot = new HashSet<>(playersOnAir);
+            }
+            virtualCdj.sendOnAirCommand(snapshot);
         } catch (Exception exc) {
-            System.err.printf("Could not send on-air state %s: %s%n", playersOnAir, exc.getMessage());
+            error = "Could not send on-air state: " + exc.getMessage();
+            System.err.println(error);
+        }
+    }
+
+    private void stopMidiProcess() {
+        Process process = midiProcess;
+        if (process != null) {
+            process.destroy();
+        }
+    }
+
+    private void writeStatus() {
+        RuntimeConfig current = config;
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("online", online);
+        payload.put("enabled", current.enabled);
+        payload.put("error", error);
+        payload.put("selected_midi_port", current.midiPort);
+        payload.put("resolved_midi_port", resolvedMidiPort);
+        payload.put("threshold", current.threshold);
+        payload.put("mapping", current.channelToPlayer);
+        synchronized (playersOnAir) {
+            payload.put("players_on_air", new ArrayList<>(playersOnAir));
+            payload.put("last_values", new HashMap<>(lastValuesByChannel));
+        }
+        payload.put("updated_at", Instant.now().toString());
+        try {
+            Path parent = current.statusPath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            mapper.writeValue(current.statusPath.toFile(), payload);
+        } catch (IOException exc) {
+            System.err.printf("Could not write status file %s: %s%n", current.statusPath, exc.getMessage());
         }
     }
 
@@ -184,7 +300,8 @@ public final class ProlinkOnair {
         }
     }
 
-    private static final class Config {
+    private static final class RuntimeConfig {
+        final boolean enabled;
         final String midiCaptureBin;
         final String midiPort;
         final String midiPortNameHint;
@@ -192,15 +309,21 @@ public final class ProlinkOnair {
         final long repeatMillis;
         final String virtualCdjName;
         final Map<Integer, Integer> channelToPlayer;
+        final Path configPath;
+        final Path statusPath;
 
-        private Config(
+        private RuntimeConfig(
+                boolean enabled,
                 String midiCaptureBin,
                 String midiPort,
                 String midiPortNameHint,
                 int threshold,
                 long repeatMillis,
                 String virtualCdjName,
-                Map<Integer, Integer> channelToPlayer) {
+                Map<Integer, Integer> channelToPlayer,
+                Path configPath,
+                Path statusPath) {
+            this.enabled = enabled;
             this.midiCaptureBin = midiCaptureBin;
             this.midiPort = midiPort;
             this.midiPortNameHint = midiPortNameHint;
@@ -208,17 +331,79 @@ public final class ProlinkOnair {
             this.repeatMillis = repeatMillis;
             this.virtualCdjName = virtualCdjName;
             this.channelToPlayer = channelToPlayer;
+            this.configPath = configPath;
+            this.statusPath = statusPath;
         }
 
-        static Config fromEnvironment() {
-            return new Config(
+        static RuntimeConfig load() {
+            Path configPath = Paths.get(env("PROLINK_ONAIR_CONFIG_PATH", "config.json"));
+            Path statusPath = Paths.get(env("PROLINK_ONAIR_STATUS_PATH", "/tmp/pi-prolink-onair-state.json"));
+            Map<String, Object> raw = readConfig(configPath);
+            return new RuntimeConfig(
+                    boolValue(raw.get("prolink_onair_enabled"), true),
                     env("PROLINK_ONAIR_MIDI_CAPTURE_BIN", "aseqdump"),
-                    env("PROLINK_ONAIR_MIDI_PORT", "16:0"),
-                    env("PROLINK_ONAIR_MIDI_PORT_HINT", "XONE:96"),
-                    intEnv("PROLINK_ONAIR_THRESHOLD", 1),
+                    stringValue(raw.get("midi_port"), env("PROLINK_ONAIR_MIDI_PORT", "24:0")),
+                    stringValue(raw.get("midi_port_name_hint"), env("PROLINK_ONAIR_MIDI_PORT_HINT", "XONE:96")),
+                    intValue(raw.get("prolink_onair_threshold"), intEnv("PROLINK_ONAIR_THRESHOLD", 1)),
                     longEnv("PROLINK_ONAIR_REPEAT_MS", 1000),
                     env("PROLINK_ONAIR_VIRTUAL_CDJ_NAME", "PI ONAIR"),
-                    parseMapping(env("PROLINK_ONAIR_CHANNEL_TO_PLAYER", "2:1,3:2")));
+                    parseMapping(raw.get("prolink_onair_channel_to_player"), env("PROLINK_ONAIR_CHANNEL_TO_PLAYER", "2:2,3:3")),
+                    configPath,
+                    statusPath);
+        }
+
+        boolean equivalentTo(RuntimeConfig other) {
+            return enabled == other.enabled
+                    && midiPort.equals(other.midiPort)
+                    && midiPortNameHint.equals(other.midiPortNameHint)
+                    && threshold == other.threshold
+                    && channelToPlayer.equals(other.channelToPlayer);
+        }
+
+        String summary() {
+            return String.format(
+                    "enabled=%s, config=%s, status=%s, MIDI=%s, threshold=%d, mapping=%s",
+                    enabled, configPath, statusPath, midiPort, threshold, channelToPlayer);
+        }
+
+        private static Map<String, Object> readConfig(Path path) {
+            if (!Files.isRegularFile(path)) {
+                return Collections.emptyMap();
+            }
+            try {
+                return new ObjectMapper().readValue(path.toFile(), new TypeReference<Map<String, Object>>() {});
+            } catch (IOException exc) {
+                System.err.printf("Could not read config file %s: %s%n", path, exc.getMessage());
+                return Collections.emptyMap();
+            }
+        }
+
+        private static Map<Integer, Integer> parseMapping(Object raw, String fallback) {
+            Map<Integer, Integer> mapping = new HashMap<>();
+            if (raw instanceof Map<?, ?>) {
+                Map<?, ?> rawMap = (Map<?, ?>) raw;
+                for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+                    Integer key = integerObject(entry.getKey());
+                    Integer value = integerObject(entry.getValue());
+                    if (key != null && value != null) {
+                        mapping.put(key, value);
+                    }
+                }
+            }
+            if (mapping.isEmpty()) {
+                for (String entry : fallback.split(",")) {
+                    String[] parts = entry.trim().split(":");
+                    if (parts.length != 2) {
+                        continue;
+                    }
+                    Integer key = integerObject(parts[0].trim());
+                    Integer value = integerObject(parts[1].trim());
+                    if (key != null && value != null) {
+                        mapping.put(key, value);
+                    }
+                }
+            }
+            return Collections.unmodifiableMap(mapping);
         }
 
         private static String env(String name, String defaultValue) {
@@ -229,12 +414,31 @@ public final class ProlinkOnair {
             return value.trim();
         }
 
-        private static int intEnv(String name, int defaultValue) {
-            try {
-                return Integer.parseInt(env(name, Integer.toString(defaultValue)));
-            } catch (NumberFormatException exc) {
+        private static String stringValue(Object value, String defaultValue) {
+            if (value == null || value.toString().trim().isEmpty()) {
                 return defaultValue;
             }
+            return value.toString().trim();
+        }
+
+        private static boolean boolValue(Object value, boolean defaultValue) {
+            if (value == null) {
+                return defaultValue;
+            }
+            if (value instanceof Boolean) {
+                return (Boolean) value;
+            }
+            return Boolean.parseBoolean(value.toString());
+        }
+
+        private static int intValue(Object value, int defaultValue) {
+            Integer parsed = integerObject(value);
+            return parsed == null ? defaultValue : Math.max(0, Math.min(127, parsed));
+        }
+
+        private static int intEnv(String name, int defaultValue) {
+            Integer parsed = integerObject(env(name, Integer.toString(defaultValue)));
+            return parsed == null ? defaultValue : parsed;
         }
 
         private static long longEnv(String name, long defaultValue) {
@@ -245,20 +449,18 @@ public final class ProlinkOnair {
             }
         }
 
-        private static Map<Integer, Integer> parseMapping(String raw) {
-            Map<Integer, Integer> mapping = new HashMap<>();
-            for (String entry : raw.split(",")) {
-                String[] parts = entry.trim().split(":");
-                if (parts.length != 2) {
-                    continue;
-                }
-                try {
-                    mapping.put(Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()));
-                } catch (NumberFormatException ignored) {
-                    // Ignore malformed entries; the resulting mapping is printed at startup.
-                }
+        private static Integer integerObject(Object value) {
+            if (value instanceof Number) {
+                return ((Number) value).intValue();
             }
-            return Collections.unmodifiableMap(mapping);
+            if (value == null) {
+                return null;
+            }
+            try {
+                return Integer.parseInt(value.toString());
+            } catch (NumberFormatException exc) {
+                return null;
+            }
         }
     }
 }

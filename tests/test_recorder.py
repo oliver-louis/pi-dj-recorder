@@ -516,6 +516,9 @@ def test_onair_log_uses_updated_threshold_value(monkeypatch, tmp_path):
         midi_port="16:0",
         input_device="plughw:2,0",
         onair_threshold=44,
+        prolink_onair_enabled=True,
+        prolink_onair_threshold=1,
+        prolink_onair_channel_to_player={"2": 2, "3": 3},
         default_mix_prefix="mix",
         track_id_merge_gap_seconds=10,
         auto_enable_metering=False,
@@ -803,6 +806,9 @@ def test_apply_settings_updates_onair_threshold_immediately(monkeypatch, tmp_pat
         midi_port="16:0",
         input_device="plughw:2,0",
         onair_threshold=40,
+        prolink_onair_enabled=True,
+        prolink_onair_threshold=1,
+        prolink_onair_channel_to_player={"2": 2, "3": 3},
         default_mix_prefix="mix",
         track_id_merge_gap_seconds=10,
         auto_enable_metering=False,
@@ -993,6 +999,9 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
         midi_port="24:0",
         input_device="plughw:2,0",
         onair_threshold=45,
+        prolink_onair_enabled=False,
+        prolink_onair_threshold=2,
+        prolink_onair_channel_to_player={"2": 2, "3": 3},
         default_mix_prefix="vinyl",
         track_id_merge_gap_seconds=7,
         auto_enable_metering=True,
@@ -1004,6 +1013,9 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     assert payload["settings"]["midi_port"] == "24:0"
     assert payload["settings"]["input_device"] == "plughw:2,0"
     assert payload["settings"]["onair_threshold"] == 45
+    assert payload["settings"]["prolink_onair_enabled"] is False
+    assert payload["settings"]["prolink_onair_threshold"] == 2
+    assert payload["settings"]["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
     assert payload["settings"]["default_mix_prefix"] == "vinyl"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 7
     assert payload["settings"]["auto_enable_metering"] is True
@@ -1014,11 +1026,50 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     assert persisted["midi_port"] == "24:0"
     assert persisted["input_device"] == "plughw:2,0"
     assert persisted["onair_threshold"] == 45
+    assert persisted["prolink_onair_enabled"] is False
+    assert persisted["prolink_onair_threshold"] == 2
+    assert persisted["prolink_onair_channel_to_player"] == {"2": 2, "3": 3}
     assert persisted["default_mix_prefix"] == "vinyl"
     assert persisted["track_id_merge_gap_seconds"] == 7
     midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
     assert len(midi_processes) >= 2
     assert midi_processes[0].signals == [signal.SIGINT]
+
+
+def test_apply_settings_rejects_invalid_prolink_mapping(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        if args[0] == ["aseqdump", "-l"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=" Port    Client name                      Port name\n 24:0    XONE 96 USB 2                    XONE 96 USB 2 XONE 96 2\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="card 2: XONE96 [XONE 96 USB 2], device 0: USB Audio [USB Audio]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+
+    with pytest.raises(ValueError):
+        recorder.apply_settings(
+            midi_port="24:0",
+            input_device="plughw:2,0",
+            onair_threshold=30,
+            prolink_onair_enabled=True,
+            prolink_onair_threshold=1,
+            prolink_onair_channel_to_player={"2": 0, "3": 3},
+            default_mix_prefix="mix",
+            track_id_merge_gap_seconds=10,
+            auto_enable_metering=False,
+            theme="dark",
+            confirm_delete_recordings=True,
+            stop_discard_countdown_seconds=3,
+        )
 
 
 def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
@@ -1031,6 +1082,9 @@ def test_apply_settings_rejects_changes_while_recording(monkeypatch, tmp_path):
             midi_port="24:0",
             input_device="plughw:2,0",
             onair_threshold=30,
+            prolink_onair_enabled=True,
+            prolink_onair_threshold=1,
+            prolink_onair_channel_to_player={"2": 2, "3": 3},
             default_mix_prefix="mix",
             track_id_merge_gap_seconds=10,
             auto_enable_metering=False,
@@ -1049,6 +1103,9 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
                 "midi_port_name_hint": "XONE 96 USB 2 XONE 96 2",
                 "input_device": "plughw:2,0",
                 "onair_threshold": 52,
+                "prolink_onair_enabled": True,
+                "prolink_onair_threshold": 1,
+                "prolink_onair_channel_to_player": {"2": 2, "3": 3},
                 "default_mix_prefix": "vinyl",
                 "track_id_merge_gap_seconds": 8,
                 "auto_enable_metering": True,
@@ -1069,6 +1126,43 @@ def test_settings_payload_reports_missing_saved_devices(monkeypatch, tmp_path):
     assert payload["debug"]["selected_midi_device"] == "24:0"
     assert payload["debug"]["onair_threshold"] == 52
     assert payload["debug"]["selected_audio_input"] == "plughw:2,0"
+
+
+def test_settings_payload_reports_missing_prolink_status_file(tmp_path):
+    recorder = Recorder(
+        tmp_path,
+        prolink_status_path=tmp_path / "missing-prolink-status.json",
+        device_check_enabled=False,
+    )
+
+    payload = recorder.settings_payload()
+
+    assert payload["debug"]["prolink_onair"]["available"] is False
+    assert payload["debug"]["prolink_onair"]["error"] == "Status file not found."
+
+
+def test_settings_payload_reports_prolink_status_file(tmp_path):
+    status_path = tmp_path / "prolink-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "online": True,
+                "selected_midi_port": "24:0",
+                "resolved_midi_port": "24:0",
+                "threshold": 1,
+                "mapping": {"2": 2, "3": 3},
+                "players_on_air": [2],
+                "last_values": {"2": 127, "3": 0},
+            }
+        )
+    )
+    recorder = Recorder(tmp_path, prolink_status_path=status_path, device_check_enabled=False)
+
+    payload = recorder.settings_payload()
+
+    assert payload["debug"]["prolink_onair"]["available"] is True
+    assert payload["debug"]["prolink_onair"]["online"] is True
+    assert payload["debug"]["prolink_onair"]["players_on_air"] == [2]
 
 
 def test_forced_device_check_still_requires_audio_ready(monkeypatch, tmp_path):
