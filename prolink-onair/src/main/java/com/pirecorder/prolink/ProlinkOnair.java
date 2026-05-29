@@ -49,12 +49,16 @@ public final class ProlinkOnair {
     private final Map<Integer, Integer> lastValuesByChannel = new HashMap<>();
     private final Map<Integer, Map<String, Object>> playerMetadata = new HashMap<>();
     private final Map<Integer, Map<String, Object>> playerPlayback = new HashMap<>();
+    private final Map<Integer, Instant> playerLastSeenAt = new HashMap<>();
     private final Map<Integer, String> playerMetadataSignatures = new HashMap<>();
     private volatile RuntimeConfig config;
+    private volatile VirtualCdj virtualCdj;
+    private volatile MetadataFinder metadataFinder;
     private volatile Process midiProcess;
     private volatile boolean online = false;
     private volatile String error = null;
     private volatile String resolvedMidiPort = null;
+    private volatile Instant lastMetadataRecoveryAt = Instant.EPOCH;
 
     private ProlinkOnair(RuntimeConfig config) {
         this.config = config;
@@ -69,6 +73,7 @@ public final class ProlinkOnair {
         System.out.printf("Starting prolink-onair at %s. %s%n", Instant.now(), config.summary());
 
         VirtualCdj virtualCdj = VirtualCdj.getInstance();
+        this.virtualCdj = virtualCdj;
         virtualCdj.setDeviceName(config.virtualCdjName);
         virtualCdj.setUseStandardPlayerNumber(true);
         virtualCdj.addUpdateListener(this::handleDeviceUpdate);
@@ -80,6 +85,7 @@ public final class ProlinkOnair {
                 virtualCdj.getBroadcastAddress().getHostAddress());
 
         MetadataFinder metadataFinder = MetadataFinder.getInstance();
+        this.metadataFinder = metadataFinder;
         metadataFinder.addTrackMetadataListener(this::handleMetadataUpdate);
         metadataFinder.start();
 
@@ -88,6 +94,7 @@ public final class ProlinkOnair {
         scheduler.scheduleAtFixedRate(() -> sendOnAir(virtualCdj), 0, config.repeatMillis, TimeUnit.MILLISECONDS);
         scheduler.scheduleAtFixedRate(this::writeStatus, 0, 1, TimeUnit.SECONDS);
         scheduler.scheduleAtFixedRate(() -> pollMetadata(metadataFinder), 2, 2, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::recoverMetadataIfNeeded, 10, 10, TimeUnit.SECONDS);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             scheduler.shutdownNow();
@@ -215,6 +222,7 @@ public final class ProlinkOnair {
         if (channel == null) {
             return;
         }
+        boolean playerReturned = markPlayerSeen(player);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("player", player);
         payload.put("channel", channel);
@@ -228,7 +236,71 @@ public final class ProlinkOnair {
         synchronized (playerPlayback) {
             playerPlayback.put(player, payload);
         }
+        if (playerReturned) {
+            System.out.printf("Player %d returned; resending on-air state and refreshing metadata.%n", player);
+            sendOnAir(virtualCdj);
+            restartMetadataFinder("player returned");
+            pollMetadata(metadataFinder);
+        }
         writeStatus();
+    }
+
+    private boolean markPlayerSeen(int player) {
+        Instant now = Instant.now();
+        synchronized (playerLastSeenAt) {
+            Instant previous = playerLastSeenAt.put(player, now);
+            return previous == null || now.minusSeconds(30).isAfter(previous);
+        }
+    }
+
+    private void recoverMetadataIfNeeded() {
+        RuntimeConfig current = config;
+        if (!current.metadataEnabled) {
+            return;
+        }
+        Instant now = Instant.now();
+        if (now.minusSeconds(60).isBefore(lastMetadataRecoveryAt)) {
+            return;
+        }
+        for (Integer player : current.playerToChannel().keySet()) {
+            boolean recentlySeen;
+            synchronized (playerLastSeenAt) {
+                Instant lastSeenAt = playerLastSeenAt.get(player);
+                recentlySeen = lastSeenAt != null && now.minusSeconds(20).isBefore(lastSeenAt);
+            }
+            if (!recentlySeen) {
+                continue;
+            }
+            synchronized (playerMetadata) {
+                if (playerMetadata.containsKey(player)) {
+                    continue;
+                }
+            }
+            restartMetadataFinder("metadata missing for player " + player);
+            pollMetadata(metadataFinder);
+            break;
+        }
+    }
+
+    private synchronized void restartMetadataFinder(String reason) {
+        MetadataFinder finder = metadataFinder;
+        if (finder == null) {
+            return;
+        }
+        Instant now = Instant.now();
+        if (now.minusSeconds(15).isBefore(lastMetadataRecoveryAt)) {
+            return;
+        }
+        lastMetadataRecoveryAt = now;
+        try {
+            System.out.printf("Restarting MetadataFinder (%s).%n", reason);
+            finder.stop();
+            finder.start();
+            error = null;
+        } catch (Exception exc) {
+            error = "Could not restart MetadataFinder: " + exc.getMessage();
+            System.err.println(error);
+        }
     }
 
     private Map<String, Object> metadataPayload(int player, int channel, TrackMetadata metadata) {
@@ -471,6 +543,13 @@ public final class ProlinkOnair {
         }
         synchronized (playerMetadata) {
             payload.put("players", mergedPlayerStatus());
+        }
+        synchronized (playerLastSeenAt) {
+            Map<String, Object> lastSeen = new LinkedHashMap<>();
+            for (Integer player : new TreeSet<>(playerLastSeenAt.keySet())) {
+                lastSeen.put(Integer.toString(player), playerLastSeenAt.get(player).toString());
+            }
+            payload.put("players_last_seen_at", lastSeen);
         }
         payload.put("updated_at", Instant.now().toString());
         try {
