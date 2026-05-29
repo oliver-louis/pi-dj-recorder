@@ -1,0 +1,22 @@
+[Unit]
+Description=Pi Pro DJ Link On-Air Bridge
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copper
+Group=copper
+WorkingDirectory=/home/copper/pi-dj-recorder
+Environment=PROLINK_ONAIR_MIDI_CAPTURE_BIN=aseqdump
+Environment=PROLINK_ONAIR_MIDI_PORT=16:0
+Environment=PROLINK_ONAIR_MIDI_PORT_HINT=XONE:96
+Environment=PROLINK_ONAIR_THRESHOLD=1
+Environment=PROLINK_ONAIR_CHANNEL_TO_PLAYER=2:1,3:2
+Environment=PROLINK_ONAIR_REPEAT_MS=1000
+ExecStart=/usr/bin/java -jar /home/copper/pi-dj-recorder/prolink-onair/target/prolink-onair-0.1.0.jar
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -72,6 +72,7 @@ app/
   recorder.py            Compatibility facade import
   services/              Internal backend modules
   static/                Plain HTML/CSS/JS frontend
+prolink-onair/           Optional headless Pro DJ Link on-air sidecar
 systemd/
   pi-recorder.service    Example systemd unit
 tests/
