@@ -346,6 +346,11 @@ dd {
   background: var(--surface-soft);
 }
 
+.prolink-player.active {
+  border-color: rgba(19, 161, 112, 0.5);
+  background: rgba(19, 161, 112, 0.12);
+}
+
 .prolink-channel,
 .prolink-player > span:not(.prolink-state-line) {
   min-width: 0;
@@ -553,6 +558,12 @@ select:focus {
   justify-content: space-between;
   gap: 12px;
   margin-top: 12px;
+}
+
+.debug-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .debug-grid {
@@ -1391,6 +1402,11 @@ button:disabled {
   .debug-panel-head {
     display: grid;
     justify-content: stretch;
+  }
+
+  .debug-panel-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .theme-segmented {

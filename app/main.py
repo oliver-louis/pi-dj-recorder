@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
+import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -17,6 +19,11 @@ from app.recorder import TrackIdExportError, WaveformGenerationError
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
+PROLINK_RESTART_COMMAND = os.getenv(
+    "PI_RECORDER_PROLINK_RESTART_COMMAND",
+    "sudo -n systemctl restart pi-prolink-onair.service",
+)
+PROLINK_RESTART_TIMEOUT_SECONDS = float(os.getenv("PI_RECORDER_PROLINK_RESTART_TIMEOUT_SECONDS", "8"))
 
 recorder = Recorder(
     Path(os.getenv("PI_RECORDER_RECORDINGS_DIR", "/home/copper/mixes")),
@@ -116,6 +123,38 @@ async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RecorderError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/prolink/restart")
+async def restart_prolink() -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(restart_prolink_service)
+    except RecorderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def restart_prolink_service() -> dict[str, object]:
+    command = shlex.split(PROLINK_RESTART_COMMAND)
+    if not command:
+        raise RecorderError("Pro Link restart command is empty.")
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=PROLINK_RESTART_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RecorderError(f"{command[0]} was not found.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RecorderError("Timed out restarting the Pro Link service.") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "Restart command failed.").strip()
+        raise RecorderError(detail)
+    return {"ok": True, "command": command}
 
 
 @app.websocket("/ws/meters")

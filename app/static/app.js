@@ -213,6 +213,7 @@ function updateProlinkMetadata(players) {
   status.classList.toggle("offline", !hasMetadata);
   [2, 3].forEach((player) => {
     const metadata = players[String(player)] || players[player] || {};
+    const card = document.getElementById(`prolink-player-${player}`);
     const title = document.getElementById(`prolink-player-${player}-title`);
     const artist = document.getElementById(`prolink-player-${player}-artist`);
     const state = document.getElementById(`prolink-player-${player}-state`);
@@ -223,6 +224,7 @@ function updateProlinkMetadata(players) {
     if (state) state.textContent = metadata.play_state || (metadata.playing ? "Playing" : "Idle");
     if (bpm) bpm.textContent = Number.isFinite(Number(metadata.bpm)) ? `${Number(metadata.bpm).toFixed(1)} BPM` : "- BPM";
     if (master) master.hidden = !metadata.is_master;
+    if (card) card.classList.toggle("active", Boolean(metadata.playing && metadata.on_air));
   });
 }
 
@@ -1092,6 +1094,21 @@ async function saveSettings() {
   }
 }
 
+async function restartProlinkService() {
+  const button = document.getElementById("settings-prolink-restart-button");
+  if (button) button.disabled = true;
+  setMessage("Restarting Pro Link service...");
+  try {
+    await fetchJson("/api/prolink/restart", { method: "POST" });
+    setMessage("Pro Link service restarted.");
+    window.setTimeout(loadSettings, 1200);
+  } catch (error) {
+    setMessage(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   setupThemeToggle();
@@ -1128,6 +1145,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     document.getElementById("settings-save-button").addEventListener("click", saveSettings);
     document.getElementById("settings-refresh-button").addEventListener("click", loadSettings);
+    document.getElementById("settings-prolink-restart-button").addEventListener("click", restartProlinkService);
     loadSettings();
   }
 });

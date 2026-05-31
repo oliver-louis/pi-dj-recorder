@@ -346,6 +346,43 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
     assert response.json()["settings"]["theme"] == "light"
 
 
+def test_restart_prolink_endpoint_success(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(main, "PROLINK_RESTART_COMMAND", "sudo -n systemctl restart pi-prolink-onair.service")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.post("/api/prolink/restart")
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    restart_call = calls[-1]
+    assert restart_call[0] == ["sudo", "-n", "systemctl", "restart", "pi-prolink-onair.service"]
+    assert restart_call[1]["timeout"] == main.PROLINK_RESTART_TIMEOUT_SECONDS
+
+
+def test_restart_prolink_endpoint_reports_failure(tmp_path, monkeypatch):
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="sudo: a password is required\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.post("/api/prolink/restart")
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "sudo: a password is required"
+
+
 def test_update_settings_rejects_invalid_selection(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
     client, original = make_client(tmp_path, monkeypatch)

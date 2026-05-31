@@ -171,6 +171,24 @@ To watch both service logs together:
 ./scripts/watch-logs.sh
 ```
 
+The Settings page also has a **Restart Pro Link** debug button. To let the web app use it without SSH, allow the service user to restart only the Pro Link sidecar:
+
+```bash
+sudo visudo -f /etc/sudoers.d/pi-recorder-prolink
+```
+
+Add:
+
+```text
+copper ALL=(root) NOPASSWD: /usr/bin/systemctl restart pi-prolink-onair.service
+```
+
+The app runs this command non-interactively:
+
+```bash
+sudo -n systemctl restart pi-prolink-onair.service
+```
+
 ## Configuration
 
 Environment variables:

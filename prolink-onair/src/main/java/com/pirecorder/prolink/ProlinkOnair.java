@@ -541,9 +541,7 @@ public final class ProlinkOnair {
             payload.put("players_on_air", new ArrayList<>(playersOnAir));
             payload.put("last_values", new HashMap<>(lastValuesByChannel));
         }
-        synchronized (playerMetadata) {
-            payload.put("players", mergedPlayerStatus());
-        }
+        payload.put("players", mergedPlayerStatus());
         synchronized (playerLastSeenAt) {
             Map<String, Object> lastSeen = new LinkedHashMap<>();
             for (Integer player : new TreeSet<>(playerLastSeenAt.keySet())) {
@@ -599,6 +597,14 @@ public final class ProlinkOnair {
             for (Map.Entry<Integer, Map<String, Object>> entry : playerPlayback.entrySet()) {
                 Map<String, Object> player = merged.computeIfAbsent(entry.getKey(), ignored -> new LinkedHashMap<>());
                 player.putAll(entry.getValue());
+            }
+        }
+        synchronized (playersOnAir) {
+            for (Integer playerNumber : config.playerToChannel().keySet()) {
+                Map<String, Object> player = merged.computeIfAbsent(playerNumber, ignored -> new LinkedHashMap<>());
+                player.put("player", playerNumber);
+                player.put("channel", config.playerToChannel().get(playerNumber));
+                player.put("on_air", playersOnAir.contains(playerNumber));
             }
         }
         return new TreeMapStringKeys(merged).asMap();
