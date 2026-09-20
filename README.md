@@ -199,6 +199,12 @@ Environment variables:
   default: `16:0`
 - `PI_RECORDER_ONAIR_THRESHOLD`  
   default: `30`
+- `PI_RECORDER_READY_TIMEOUT_SECONDS`
+  default: `8`; maximum time to wait for FFmpeg to confirm that audio is being written
+
+The MIDI logger runs `aseqdump` through GNU `stdbuf`, which is provided by the
+standard `coreutils` package on Raspberry Pi OS. This keeps mixer events
+line-buffered so their timestamps reflect when they were received.
 
 Example local run with a temporary recordings directory:
 

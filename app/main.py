@@ -34,6 +34,7 @@ recorder = Recorder(
     prolink_status_path=Path(os.getenv("PI_RECORDER_PROLINK_STATUS_PATH", "/tmp/pi-prolink-onair-state.json")),
     prolink_metadata_log_path=Path(os.getenv("PI_RECORDER_PROLINK_METADATA_LOG_PATH", "/tmp/pi-prolink-metadata.jsonl")),
     onair_threshold=int(os.getenv("PI_RECORDER_ONAIR_THRESHOLD", "30")),
+    recording_ready_timeout_seconds=float(os.getenv("PI_RECORDER_READY_TIMEOUT_SECONDS", "8")),
 )
 
 

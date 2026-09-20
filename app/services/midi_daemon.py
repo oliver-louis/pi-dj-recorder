@@ -5,6 +5,7 @@ import signal
 import subprocess
 import threading
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Callable
 
 from app.services.models import MidiChannelState
@@ -19,12 +20,14 @@ class MidiDaemonService:
         self,
         *,
         midi_capture_bin: str,
+        stdbuf_bin: str,
         midi_port: str,
         midi_port_name_hint: str,
         onair_threshold: int,
         on_channel_payload: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.midi_capture_bin = midi_capture_bin
+        self.stdbuf_bin = stdbuf_bin
         self.midi_port = midi_port
         self.midi_port_name_hint = midi_port_name_hint
         self.onair_threshold = onair_threshold
@@ -143,7 +146,7 @@ class MidiDaemonService:
         port = resolved_port if resolved_port is not None else self.resolve_midi_port()
         if port is None:
             raise FileNotFoundError("No matching MIDI input port is currently available.")
-        return [self.midi_capture_bin, "-p", port]
+        return [self.stdbuf_bin, "-oL", self.midi_capture_bin, "-p", port]
 
     def resolve_midi_port(self) -> str | None:
         ports = self.list_midi_ports()
@@ -229,7 +232,10 @@ class MidiDaemonService:
         except OSError as exc:
             self._daemon_midi_process = None
             self._midi_online = False
-            self._midi_error = str(exc)
+            if isinstance(exc, FileNotFoundError):
+                self._midi_error = f"{exc.filename or command[0]} was not found."
+            else:
+                self._midi_error = str(exc)
             return
         self._daemon_midi_process = process
         self._daemon_port_in_use = command[-1]
@@ -270,7 +276,9 @@ class MidiDaemonService:
             return
         try:
             for line in stream:
+                received_at_monotonic = monotonic()
                 payload = self.parse_midi_line(line)
+                payload["_received_at_monotonic"] = received_at_monotonic
                 if self._daemon_midi_process is not process:
                     return
                 self._midi_updated_at = datetime.now(timezone.utc).isoformat()

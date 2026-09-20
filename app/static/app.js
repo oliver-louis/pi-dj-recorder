@@ -366,6 +366,8 @@ async function maybeAutoEnableMetering(status) {
 }
 
 async function startRecording() {
+  const startButton = document.getElementById("start-button");
+  startButton.disabled = true;
   setMessage("Starting recording...");
   try {
     const mixName = document.getElementById("mix-name").value.trim();
@@ -378,6 +380,7 @@ async function startRecording() {
     setMessage(`Recording ${status.current_filename}`);
   } catch (error) {
     setMessage(error.message, true);
+    await refreshStatus();
   }
 }
 

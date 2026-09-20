@@ -1,8 +1,10 @@
 import json
+import queue
 import signal
 import subprocess
 import threading
 from pathlib import Path
+from time import monotonic
 
 import pytest
 
@@ -23,8 +25,9 @@ class FakeProcess:
         self.signals = []
         self.terminated = False
         self.killed = False
-        self.stdout = FakeStream()
-        self.stderr = FakeStream()
+        progress_lines = ["out_time_us=100000\n", "progress=continue\n"] if "-progress" in command else []
+        self.stdout = FakeStream(progress_lines)
+        self.stderr = FakeStream([stderr_output] if stderr_output else [])
 
     def __enter__(self):
         return self
@@ -70,8 +73,9 @@ class FakeProcess:
 
 
 class FakeStream:
-    def __init__(self):
+    def __init__(self, lines=None):
         self._closed = threading.Event()
+        self._lines = iter(lines or [])
 
     def close(self):
         self._closed.set()
@@ -80,8 +84,39 @@ class FakeStream:
         return self
 
     def __next__(self):
+        try:
+            return next(self._lines)
+        except StopIteration:
+            pass
         self._closed.wait()
         raise StopIteration
+
+
+class ControllableStream:
+    def __init__(self):
+        self._lines = queue.Queue()
+        self._closed = False
+
+    def push(self, line):
+        self._lines.put(line)
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._lines.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self._lines.get()
+        if line is None:
+            raise StopIteration
+        return line
+
+
+def midi_command(port="16:0"):
+    return ["stdbuf", "-oL", "aseqdump", "-p", port]
 
 
 def test_start_creates_expected_command(monkeypatch, tmp_path):
@@ -102,8 +137,13 @@ def test_start_creates_expected_command(monkeypatch, tmp_path):
     assert status.current_filename.endswith(".wav")
     assert status.pid == processes[0].pid
     command = processes[0].command
-    assert command[:12] == [
+    assert command[:17] == [
         "ffmpeg",
+        "-nostats",
+        "-stats_period",
+        "0.1",
+        "-progress",
+        "pipe:1",
         "-f",
         "alsa",
         "-channels",
@@ -116,11 +156,11 @@ def test_start_creates_expected_command(monkeypatch, tmp_path):
         "plughw:X2,0",
         "-filter_complex",
     ]
-    assert command[12].startswith("pan=stereo|c0=c10|c1=c11,astats=metadata=1:reset=1")
-    assert "ametadata=mode=print:key=lavfi.astats.1.Peak_level" in command[12]
-    assert "ametadata=mode=print:key=lavfi.astats.2.RMS_level" in command[12]
+    assert command[17].startswith("pan=stereo|c0=c10|c1=c11,astats=metadata=1:reset=1")
+    assert "ametadata=mode=print:key=lavfi.astats.1.Peak_level" in command[17]
+    assert "ametadata=mode=print:key=lavfi.astats.2.RMS_level" in command[17]
     assert command[-2:] == ["pcm_s24le", str(tmp_path / status.current_filename)]
-    assert any(process.command == ["aseqdump", "-p", "16:0"] for process in processes)
+    assert any(process.command == midi_command() for process in processes)
 
 
 def test_second_start_raises(monkeypatch, tmp_path):
@@ -131,6 +171,67 @@ def test_second_start_raises(monkeypatch, tmp_path):
 
     with pytest.raises(AlreadyRecordingError):
         recorder.start()
+
+
+def test_start_waits_for_positive_audio_progress(monkeypatch, tmp_path):
+    spawned = threading.Event()
+    completed = threading.Event()
+    progress_stream = ControllableStream()
+    result = {}
+
+    def fake_popen(command, **kwargs):
+        process = FakeProcess(command, **kwargs)
+        if command[0] == "ffmpeg" and "-progress" in command:
+            process.stdout = progress_stream
+            spawned.set()
+        return process
+
+    def start_recording():
+        try:
+            result["status"] = recorder.start()
+        except Exception as exc:  # pragma: no cover - assertion reports the captured exception
+            result["error"] = exc
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    recorder = Recorder(tmp_path, device_check_enabled=False, recording_ready_timeout_seconds=1)
+    thread = threading.Thread(target=start_recording)
+    thread.start()
+
+    assert spawned.wait(0.5)
+    assert completed.wait(0.05) is False
+    progress_stream.push("out_time_us=0\n")
+    assert completed.wait(0.05) is False
+    progress_stream.push("out_time_us=250000\n")
+    assert completed.wait(0.5)
+    assert "error" not in result
+    assert result["status"].recording is True
+
+    recorder.stop()
+    thread.join(timeout=0.5)
+
+
+def test_start_timeout_removes_partial_recording(monkeypatch, tmp_path):
+    processes = []
+
+    def fake_popen(command, **kwargs):
+        process = FakeProcess(command, **kwargs)
+        if command[0] == "ffmpeg" and "-progress" in command:
+            process.stdout = FakeStream()
+            Path(command[-1]).write_bytes(b"partial wav")
+            processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    recorder = Recorder(tmp_path, device_check_enabled=False, recording_ready_timeout_seconds=0.05)
+
+    with pytest.raises(DeviceUnavailableError, match="Timed out waiting for audio"):
+        recorder.start()
+
+    assert not list(tmp_path.glob("*.wav"))
+    assert processes[0].terminated is True
+    assert recorder.status().recording is False
 
 
 def test_stop_sends_sigint(monkeypatch, tmp_path):
@@ -203,7 +304,7 @@ def test_status_reports_file_size(monkeypatch, tmp_path):
 
 
 def test_dead_process_is_cleared(monkeypatch, tmp_path):
-    process = FakeProcess(["ffmpeg"])
+    process = FakeProcess(["ffmpeg", "-progress"])
     monkeypatch.setattr(
         subprocess,
         "Popen",
@@ -814,8 +915,23 @@ def test_midi_daemon_starts_and_stops(monkeypatch, tmp_path):
     recorder.start_midi_daemon()
     recorder.shutdown()
 
-    daemon_process = next(process for process in processes if process.command == ["aseqdump", "-p", "16:0"])
+    daemon_process = next(process for process in processes if process.command == midi_command())
     assert daemon_process.signals == [signal.SIGINT]
+
+
+def test_midi_daemon_reports_missing_stdbuf(monkeypatch, tmp_path):
+    def fake_popen(command, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+
+    recorder.start_midi_daemon()
+    payload = recorder.midi_state_payload()
+    recorder.shutdown()
+
+    assert payload["midi_online"] is False
+    assert payload["midi_error"] == "stdbuf was not found."
 
 
 def test_daemon_payload_updates_channel_state(tmp_path):
@@ -899,12 +1015,12 @@ def test_daemon_restarts_when_process_exits(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     recorder = Recorder(tmp_path, device_check_enabled=False)
     recorder.start_midi_daemon()
-    daemon_process = next(process for process in processes if process.command == ["aseqdump", "-p", "16:0"])
+    daemon_process = next(process for process in processes if process.command == midi_command())
     daemon_process.returncode = 1
 
     recorder._ensure_midi_daemon_locked()
 
-    assert len([process for process in processes if process.command == ["aseqdump", "-p", "16:0"]]) == 2
+    assert len([process for process in processes if process.command == midi_command()]) == 2
 
 
 def test_resolve_midi_port_uses_name_hint_when_port_changes(monkeypatch, tmp_path):
@@ -954,10 +1070,40 @@ def test_daemon_restarts_when_resolved_port_changes(monkeypatch, tmp_path):
     recorder.start_midi_daemon()
     recorder._ensure_midi_daemon_locked("24:0")
 
-    midi_processes = [process for process in processes if process.command[0] == "aseqdump"]
+    midi_processes = [process for process in processes if process.command[:3] == ["stdbuf", "-oL", "aseqdump"]]
     assert len(midi_processes) == 2
     assert midi_processes[0].signals == [signal.SIGINT]
-    assert midi_processes[1].command == ["aseqdump", "-p", "24:0"]
+    assert midi_processes[1].command == midi_command("24:0")
+
+
+def test_midi_commands_are_line_buffered(tmp_path):
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+
+    assert recorder._build_midi_command("16:0") == midi_command()
+    assert recorder._midi_daemon.build_midi_command("16:0") == midi_command()
+
+
+def test_onair_event_uses_midi_receive_time(monkeypatch, tmp_path):
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    started = recorder.start()
+    progress_observed_at = monotonic()
+    recorder._runtime._audio_progress_seconds = 10.0
+    recorder._runtime._audio_progress_observed_at = progress_observed_at
+
+    recorder._apply_daemon_midi_payload_locked(
+        {
+            "control": 0,
+            "value": 31,
+            "ts_utc": "2026-05-12T22:48:46+00:00",
+            "_received_at_monotonic": progress_observed_at - 0.5,
+        }
+    )
+
+    lines = [json.loads(line) for line in recorder._onair_log_path_for_recording(started.current_filename).read_text().splitlines()]
+    assert lines[-1]["type"] == "channel_in"
+    assert lines[-1]["time_seconds"] == pytest.approx(9.5)
+    recorder.stop()
 
 
 def test_daemon_stops_when_port_disappears(monkeypatch, tmp_path):
@@ -1104,7 +1250,7 @@ def test_apply_settings_updates_devices_and_persists(monkeypatch, tmp_path):
     assert persisted["prolink_virtual_player_number"] == 4
     assert persisted["default_mix_prefix"] == "vinyl"
     assert persisted["track_id_merge_gap_seconds"] == 7
-    midi_processes = [process for process in processes if process.command == ["aseqdump", "-p", "24:0"]]
+    midi_processes = [process for process in processes if process.command == midi_command("24:0")]
     assert len(midi_processes) >= 2
     assert midi_processes[0].signals == [signal.SIGINT]
 
@@ -1296,7 +1442,29 @@ def test_start_and_stop_metering(monkeypatch, tmp_path):
     assert started.metering_active is True
     assert stopped.metering_active is False
     monitor_process = next(process for process in processes if process.command and process.command[0] == "ffmpeg")
-    assert monitor_process.signals == [signal.SIGINT]
+    assert monitor_process.terminated is True
+
+
+def test_start_recording_terminates_meter_before_launch(monkeypatch, tmp_path):
+    processes = []
+
+    def fake_popen(command, **kwargs):
+        process = FakeProcess(command, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    recorder.start_metering()
+    monitor_process = processes[0]
+
+    status = recorder.start()
+
+    recording_process = next(process for process in processes[1:] if process.command[0] == "ffmpeg")
+    assert monitor_process.terminated is True
+    assert processes.index(monitor_process) < processes.index(recording_process)
+    assert status.recording is True
+    recorder.stop()
 
 
 def test_stop_metering_during_recording_keeps_recording(monkeypatch, tmp_path):
@@ -1337,7 +1505,7 @@ def test_device_check_reports_available_while_metering(monkeypatch, tmp_path):
 
 def test_start_metering_raises_when_ffmpeg_exits_immediately(monkeypatch, tmp_path):
     def fake_popen(command, **kwargs):
-        if command[0] == "aseqdump":
+        if command[0] == "stdbuf":
             return FakeProcess(command, **kwargs)
         process = FakeProcess(command, stderr_output="Error opening input files: Input/output error\n", **kwargs)
         process.returncode = 1

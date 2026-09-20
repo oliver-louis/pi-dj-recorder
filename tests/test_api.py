@@ -156,7 +156,7 @@ def test_start_reports_unavailable_device(tmp_path, monkeypatch):
 
 def test_metering_start_reports_unavailable_device(tmp_path, monkeypatch):
     def fake_popen(command, **kwargs):
-        if command[0] == "aseqdump":
+        if command[0] == "stdbuf":
             return FakeProcess(command, **kwargs)
         process = FakeProcess(command, stderr_output="Error opening input files: Input/output error\n", **kwargs)
         process.returncode = 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import signal
 import subprocess
 import threading
@@ -31,6 +32,9 @@ from app.services.track_ids import TrackIdExporter
 from app.services.waveforms import WaveformService
 
 
+logger = logging.getLogger(__name__)
+
+
 def _recorder_watchdog_entry(recorder_ref: "weakref.ReferenceType[Recorder]") -> None:
     while True:
         recorder = recorder_ref()
@@ -51,6 +55,7 @@ class Recorder:
         ffmpeg_bin: str = "ffmpeg",
         input_device: str = "plughw:X2,0",
         midi_capture_bin: str = "aseqdump",
+        stdbuf_bin: str = "stdbuf",
         midi_port: str = "16:0",
         midi_port_name_hint: str = "XONE:96",
         config_path: Path | None = None,
@@ -59,6 +64,7 @@ class Recorder:
         onair_threshold: int = 30,
         stop_timeout_seconds: float = 15.0,
         process_start_grace_seconds: float = 0.35,
+        recording_ready_timeout_seconds: float = 8.0,
         device_check_timeout_seconds: float = 4.0,
         device_check_cache_seconds: float = 5.0,
         device_check_enabled: bool = True,
@@ -91,6 +97,7 @@ class Recorder:
         self.ffmpeg_bin = ffmpeg_bin
         self.input_device = loaded_settings.input_device
         self.midi_capture_bin = midi_capture_bin
+        self.stdbuf_bin = stdbuf_bin
         self.midi_port = loaded_settings.midi_port
         self.midi_port_name_hint = loaded_settings.midi_port_name_hint
         self.onair_threshold = max(0, min(127, int(loaded_settings.onair_threshold)))
@@ -112,6 +119,7 @@ class Recorder:
         self.stop_discard_countdown_seconds = loaded_settings.stop_discard_countdown_seconds
         self.stop_timeout_seconds = stop_timeout_seconds
         self.process_start_grace_seconds = process_start_grace_seconds
+        self.recording_ready_timeout_seconds = recording_ready_timeout_seconds
         self.device_check_timeout_seconds = device_check_timeout_seconds
         self.device_check_cache_seconds = device_check_cache_seconds
         self.device_check_enabled = device_check_enabled
@@ -125,6 +133,7 @@ class Recorder:
             input_device=self.input_device,
             stop_timeout_seconds=stop_timeout_seconds,
             process_start_grace_seconds=process_start_grace_seconds,
+            recording_ready_timeout_seconds=recording_ready_timeout_seconds,
             device_check_timeout_seconds=device_check_timeout_seconds,
             device_check_cache_seconds=device_check_cache_seconds,
             device_check_enabled=device_check_enabled,
@@ -132,12 +141,14 @@ class Recorder:
         self._midi_logs = MidiLoggingService(
             store=self._store,
             midi_capture_bin=midi_capture_bin,
+            stdbuf_bin=stdbuf_bin,
             midi_port=self.midi_port,
             resolve_port=self._resolve_midi_port,
             onair_threshold=self.onair_threshold,
         )
         self._midi_daemon = MidiDaemonService(
             midi_capture_bin=midi_capture_bin,
+            stdbuf_bin=stdbuf_bin,
             midi_port=self.midi_port,
             midi_port_name_hint=self.midi_port_name_hint,
             onair_threshold=self.onair_threshold,
@@ -176,6 +187,7 @@ class Recorder:
             return self._midi_daemon.state_payload()
 
     def start(self, mix_name: str | None = None) -> RecordingStatus:
+        startup_started_at = monotonic()
         with self._lock:
             self._clear_if_process_exited_locked()
             if self._runtime.process is not None:
@@ -185,9 +197,17 @@ class Recorder:
 
             self.ensure_recordings_dir()
             output_path = self.recordings_dir / self._new_filename(mix_name)
-            self._runtime.start_recording(output_path)
+            self._runtime.start_recording(
+                output_path,
+                ready_deadline=startup_started_at + self.recording_ready_timeout_seconds,
+            )
             self._start_onair_log_locked(output_path)
             self._start_midi_capture_locked(output_path)
+            logger.info(
+                "Recording start completed path=%s total_startup_seconds=%.3f",
+                output_path,
+                monotonic() - startup_started_at,
+            )
             return self._status_locked()
 
     def stop(self, *, discard: bool = False) -> RecordingStatus:
@@ -212,11 +232,7 @@ class Recorder:
                     process.wait(timeout=5)
 
             status = self._status_locked(recording_override=False, pid_override=None)
-            self._runtime.process = None
-            self._runtime._current_path = None
-            self._runtime._started_at_monotonic = None
-            self._runtime._metering_enabled = False
-            self._runtime._meter_state = self._idle_meter_state()
+            self._runtime.reset_recording_state()
             if discard and recording_path is not None:
                 self._store.discard_recording_artifacts(recording_path.name)
             return status
@@ -508,11 +524,15 @@ class Recorder:
         return self._runtime.build_metering_command()
 
     def _clear_if_process_exited_locked(self) -> None:
-        self._runtime.clear_if_process_exited(self._stop_midi_locked)
+        self._runtime.clear_if_process_exited(self._handle_recording_exit_locked)
         self._midi_logs.clear_if_capture_exited()
         if self._runtime.process is None and self._midi_logs._onair_log_path is not None:
             self._stop_onair_log_locked()
         self._midi_daemon.clear_if_process_exited()
+
+    def _handle_recording_exit_locked(self) -> None:
+        self._stop_onair_log_locked()
+        self._stop_midi_locked()
 
     def _status_locked(
         self,
@@ -710,7 +730,11 @@ class Recorder:
         self._midi_logs.stop_capture()
 
     def _start_onair_log_locked(self, recording_path: Path) -> None:
-        self._midi_logs.start_onair_log(recording_path, self._midi_daemon.channels())
+        self._midi_logs.start_onair_log(
+            recording_path,
+            self._midi_daemon.channels(),
+            started_at_utc=self._runtime.recording_started_at_utc(),
+        )
 
     def _stop_onair_log_locked(self) -> None:
         self._midi_logs.stop_onair_log(self._recording_elapsed_seconds())
@@ -718,8 +742,8 @@ class Recorder:
     def _write_onair_event_locked(self, payload: dict[str, object]) -> None:
         self._midi_logs.write_onair_event(payload)
 
-    def _recording_elapsed_seconds(self) -> float:
-        return self._runtime.recording_elapsed_seconds()
+    def _recording_elapsed_seconds(self, observed_at: float | None = None) -> float:
+        return self._runtime.recording_elapsed_seconds(observed_at)
 
     def _build_midi_command(self, resolved_port: str | None = None) -> list[str]:
         return self._midi_logs.build_midi_command(resolved_port)
@@ -766,7 +790,10 @@ class Recorder:
         except OSError as exc:
             self._daemon_midi_process = None
             self._midi_daemon._midi_online = False
-            self._midi_daemon._midi_error = str(exc)
+            if isinstance(exc, FileNotFoundError):
+                self._midi_daemon._midi_error = f"{exc.filename or command[0]} was not found."
+            else:
+                self._midi_daemon._midi_error = str(exc)
             return
         self._daemon_midi_process = process
         self._daemon_port_in_use = command[-1]
@@ -789,11 +816,14 @@ class Recorder:
         current_state, next_on_air = self._midi_daemon.apply_payload_locked(payload)
         if current_state is None or next_on_air is None:
             return
+        received_at = payload.get("_received_at_monotonic")
+        if not isinstance(received_at, (int, float)):
+            received_at = None
         self._midi_logs.apply_daemon_payload(
             payload,
             current_state=current_state,
             next_on_air=next_on_air,
-            elapsed_seconds=self._recording_elapsed_seconds(),
+            elapsed_seconds=self._recording_elapsed_seconds(received_at),
         )
 
     def _handle_daemon_payload(self, payload: dict[str, object]) -> None:

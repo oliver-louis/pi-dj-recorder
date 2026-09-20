@@ -12,6 +12,7 @@ Environment=PATH=/home/copper/pi-dj-recorder/.venv/bin:/usr/local/sbin:/usr/loca
 Environment=PI_RECORDER_RECORDINGS_DIR=/home/copper/mixes
 Environment=PI_RECORDER_MIDI_PORT=16:0
 Environment=PI_RECORDER_ONAIR_THRESHOLD=30
+Environment=PI_RECORDER_READY_TIMEOUT_SECONDS=8
 ExecStart=/home/copper/pi-dj-recorder/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3

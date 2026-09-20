@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 import signal
 import subprocess
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable
@@ -11,6 +13,9 @@ from typing import Any, Callable
 from app.services.errors import DeviceUnavailableError, NotMeteringError
 from app.services.models import MeterState, RecordingStatus
 from app.services.parsers import AstatsParser
+
+
+logger = logging.getLogger(__name__)
 
 
 class RecordingRuntimeService:
@@ -21,6 +26,7 @@ class RecordingRuntimeService:
         input_device: str,
         stop_timeout_seconds: float,
         process_start_grace_seconds: float,
+        recording_ready_timeout_seconds: float,
         device_check_timeout_seconds: float,
         device_check_cache_seconds: float,
         device_check_enabled: bool,
@@ -29,6 +35,7 @@ class RecordingRuntimeService:
         self.input_device = input_device
         self.stop_timeout_seconds = stop_timeout_seconds
         self.process_start_grace_seconds = process_start_grace_seconds
+        self.recording_ready_timeout_seconds = recording_ready_timeout_seconds
         self.device_check_timeout_seconds = device_check_timeout_seconds
         self.device_check_cache_seconds = device_check_cache_seconds
         self.device_check_enabled = device_check_enabled
@@ -36,7 +43,13 @@ class RecordingRuntimeService:
         self._monitor_process: subprocess.Popen[Any] | None = None
         self._current_path: Path | None = None
         self._started_at_monotonic: float | None = None
+        self._started_at_utc: datetime | None = None
+        self._audio_progress_seconds = 0.0
+        self._audio_progress_observed_at: float | None = None
+        self._recording_ready_event = threading.Event()
+        self._progress_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
+        self._last_ffmpeg_error: str | None = None
         self._metering_enabled = False
         self._meter_state = self.idle_meter_state()
         self._device_check_time: float | None = None
@@ -67,15 +80,61 @@ class RecordingRuntimeService:
     def metering_enabled(self) -> bool:
         return self._metering_enabled
 
-    def start_recording(self, output_path: Path) -> None:
+    def start_recording(self, output_path: Path, *, ready_deadline: float | None = None) -> None:
+        startup_started_at = monotonic()
         command = self.build_ffmpeg_command(output_path)
-        process = self.start_ffmpeg_process(command)
+        process = self.start_ffmpeg_process(command, capture_stdout=True, wait_for_grace=False)
         self._process = process
         self._current_path = output_path
-        self._started_at_monotonic = monotonic()
+        self._started_at_monotonic = None
+        self._started_at_utc = None
+        self._audio_progress_seconds = 0.0
+        self._audio_progress_observed_at = None
+        self._recording_ready_event.clear()
+        self._last_ffmpeg_error = None
         self._metering_enabled = True
         self._meter_state = self.idle_meter_state(recording=True)
         self.start_stderr_reader(process, source="recording")
+        self.start_progress_reader(process)
+        logger.info("Recording FFmpeg launched pid=%s path=%s", process.pid, output_path)
+
+        deadline = ready_deadline or startup_started_at + self.recording_ready_timeout_seconds
+        while monotonic() < deadline:
+            if process.poll() is not None:
+                if self._stderr_thread is not None:
+                    self._stderr_thread.join(timeout=0.1)
+                message = self._last_ffmpeg_error or f"Could not start recording from {self.input_device}."
+                self._fail_recording_start(process, output_path)
+                logger.error(
+                    "Recording FFmpeg exited before audio was ready pid=%s path=%s error=%s",
+                    process.pid,
+                    output_path,
+                    message,
+                )
+                raise DeviceUnavailableError(message)
+            if self._recording_ready_event.wait(timeout=0.05):
+                if process.poll() is not None:
+                    continue
+                logger.info(
+                    "Recording audio ready pid=%s path=%s startup_seconds=%.3f audio_seconds=%.3f",
+                    process.pid,
+                    output_path,
+                    monotonic() - startup_started_at,
+                    self._audio_progress_seconds,
+                )
+                return
+
+        self._fail_recording_start(process, output_path)
+        logger.error(
+            "Recording audio readiness timed out pid=%s path=%s timeout_seconds=%.1f",
+            process.pid,
+            output_path,
+            self.recording_ready_timeout_seconds,
+        )
+        raise DeviceUnavailableError(
+            f"Timed out waiting for audio from {self.input_device} after "
+            f"{self.recording_ready_timeout_seconds:g} seconds."
+        )
 
     def stop_recording(self) -> RecordingStatus:
         process = self._process
@@ -92,11 +151,7 @@ class RecordingRuntimeService:
                 process.kill()
                 process.wait(timeout=5)
         status = self.status(recording_override=False, pid_override=None)
-        self._process = None
-        self._current_path = None
-        self._started_at_monotonic = None
-        self._metering_enabled = False
-        self._meter_state = self.idle_meter_state()
+        self.reset_recording_state()
         return status
 
     def start_metering(self) -> None:
@@ -170,10 +225,14 @@ class RecordingRuntimeService:
 
     def clear_if_process_exited(self, on_recording_exit: Callable[[], None]) -> None:
         if self._process is not None and self._process.poll() is not None:
-            self._process = None
-            self._current_path = None
-            self._started_at_monotonic = None
+            logger.error(
+                "Recording FFmpeg exited unexpectedly pid=%s path=%s error=%s",
+                self._process.pid,
+                self._current_path,
+                self._last_ffmpeg_error or "unknown",
+            )
             on_recording_exit()
+            self.reset_recording_state()
         if self._monitor_process is not None and self._monitor_process.poll() is not None:
             self._monitor_process = None
             self._metering_enabled = False
@@ -195,9 +254,7 @@ class RecordingRuntimeService:
         pid = process.pid if process is not None else None
         if pid_override is not None or recording_override is False:
             pid = pid_override
-        elapsed = 0
-        if self._started_at_monotonic is not None:
-            elapsed = int(monotonic() - self._started_at_monotonic)
+        elapsed = int(self.recording_elapsed_seconds())
         size = self.file_size(path)
         return RecordingStatus(
             recording=is_recording,
@@ -230,24 +287,32 @@ class RecordingRuntimeService:
         process = self._monitor_process
         if process is None:
             return
-        process.send_signal(signal.SIGINT)
+        stop_started_at = monotonic()
+        process.terminate()
         try:
-            process.wait(timeout=3)
+            process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
+            process.kill()
+            process.wait(timeout=1)
+        logger.info(
+            "Live metering FFmpeg stopped pid=%s duration_seconds=%.3f",
+            process.pid,
+            monotonic() - stop_started_at,
+        )
         self._monitor_process = None
         if self._process is None:
             self._meter_state = self.idle_meter_state()
 
-    def recording_elapsed_seconds(self) -> float:
-        if self._started_at_monotonic is None:
+    def recording_elapsed_seconds(self, observed_at: float | None = None) -> float:
+        progress_observed_at = self._audio_progress_observed_at
+        if progress_observed_at is None:
             return 0.0
-        return max(0.0, monotonic() - self._started_at_monotonic)
+        if observed_at is None:
+            observed_at = monotonic()
+        return max(0.0, self._audio_progress_seconds + observed_at - progress_observed_at)
+
+    def recording_started_at_utc(self) -> datetime | None:
+        return self._started_at_utc
 
     def file_size(self, path: Path | None) -> int:
         if path is None:
@@ -257,12 +322,18 @@ class RecordingRuntimeService:
         except FileNotFoundError:
             return 0
 
-    def start_ffmpeg_process(self, command: list[str]) -> subprocess.Popen[Any]:
+    def start_ffmpeg_process(
+        self,
+        command: list[str],
+        *,
+        capture_stdout: bool = False,
+        wait_for_grace: bool = True,
+    ) -> subprocess.Popen[Any]:
         try:
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
@@ -270,6 +341,8 @@ class RecordingRuntimeService:
             )
         except OSError as exc:
             raise DeviceUnavailableError(str(exc)) from exc
+        if not wait_for_grace:
+            return process
         deadline = monotonic() + self.process_start_grace_seconds
         while monotonic() < deadline:
             if process.poll() is not None:
@@ -277,6 +350,33 @@ class RecordingRuntimeService:
                 raise DeviceUnavailableError(self.clean_error(stderr_output))
             sleep(0.05)
         return process
+
+    def start_progress_reader(self, process: subprocess.Popen[Any]) -> None:
+        thread = threading.Thread(target=self.read_ffmpeg_progress, args=(process,), daemon=True)
+        self._progress_thread = thread
+        thread.start()
+
+    def read_ffmpeg_progress(self, process: subprocess.Popen[Any]) -> None:
+        stdout = process.stdout
+        if stdout is None:
+            return
+        for line in stdout:
+            key, separator, raw_value = line.strip().partition("=")
+            if not separator or key != "out_time_us":
+                continue
+            try:
+                audio_seconds = int(raw_value) / 1_000_000
+            except ValueError:
+                continue
+            if audio_seconds <= 0 or self._process is not process or process.poll() is not None:
+                continue
+            observed_at = monotonic()
+            self._audio_progress_seconds = audio_seconds
+            self._audio_progress_observed_at = observed_at
+            if self._started_at_monotonic is None:
+                self._started_at_monotonic = observed_at - audio_seconds
+                self._started_at_utc = datetime.now(timezone.utc) - timedelta(seconds=audio_seconds)
+            self._recording_ready_event.set()
 
     def start_stderr_reader(self, process: subprocess.Popen[Any], *, source: str) -> None:
         thread = threading.Thread(target=self.read_ffmpeg_stderr, args=(process, source), daemon=True)
@@ -290,6 +390,9 @@ class RecordingRuntimeService:
             return
         try:
             for line in stderr:
+                stripped = line.strip()
+                if stripped:
+                    self._last_ffmpeg_error = stripped[-300:]
                 meter_state = parser.parse_line(line)
                 if meter_state is None:
                     continue
@@ -308,6 +411,11 @@ class RecordingRuntimeService:
     def build_ffmpeg_command(self, output_path: Path) -> list[str]:
         return [
             self.ffmpeg_bin,
+            "-nostats",
+            "-stats_period",
+            "0.1",
+            "-progress",
+            "pipe:1",
             "-f",
             "alsa",
             "-channels",
@@ -331,6 +439,31 @@ class RecordingRuntimeService:
             "pcm_s24le",
             str(output_path),
         ]
+
+    def reset_recording_state(self) -> None:
+        self._process = None
+        self._current_path = None
+        self._started_at_monotonic = None
+        self._started_at_utc = None
+        self._audio_progress_seconds = 0.0
+        self._audio_progress_observed_at = None
+        self._recording_ready_event.clear()
+        self._metering_enabled = False
+        self._meter_state = self.idle_meter_state()
+
+    def _fail_recording_start(self, process: subprocess.Popen[Any], output_path: Path) -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+        self.reset_recording_state()
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
 
     def build_device_check_command(self) -> list[str]:
         return [

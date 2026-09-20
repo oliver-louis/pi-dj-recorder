@@ -20,12 +20,14 @@ class MidiLoggingService:
         *,
         store: RecordingsStore,
         midi_capture_bin: str,
+        stdbuf_bin: str,
         midi_port: str,
         resolve_port: Callable[[], str | None],
         onair_threshold: int,
     ) -> None:
         self.store = store
         self.midi_capture_bin = midi_capture_bin
+        self.stdbuf_bin = stdbuf_bin
         self.midi_port = midi_port
         self.resolve_port = resolve_port
         self.onair_threshold = onair_threshold
@@ -87,7 +89,13 @@ class MidiLoggingService:
             self._midi_log_path = None
             self._midi_started_at_monotonic = None
 
-    def start_onair_log(self, recording_path: Path, channel_states: dict[str, MidiChannelState]) -> None:
+    def start_onair_log(
+        self,
+        recording_path: Path,
+        channel_states: dict[str, MidiChannelState],
+        *,
+        started_at_utc: datetime | None = None,
+    ) -> None:
         self._onair_log_path = self.store.onair_log_path_for_name(recording_path.name)
         self._onair_channel_states = {name: state.on_air for name, state in channel_states.items()}
         self.write_onair_event(
@@ -96,7 +104,7 @@ class MidiLoggingService:
                 "recording_filename": recording_path.name,
                 "threshold": self.onair_threshold,
                 "time_seconds": 0.0,
-                "ts_utc": datetime.now(timezone.utc).isoformat(),
+                "ts_utc": (started_at_utc or datetime.now(timezone.utc)).isoformat(),
             }
         )
         for state in channel_states.values():
@@ -157,7 +165,7 @@ class MidiLoggingService:
         port = resolved_port if resolved_port is not None else self.resolve_port()
         if port is None:
             raise FileNotFoundError("No matching MIDI input port is currently available.")
-        return [self.midi_capture_bin, "-p", port]
+        return [self.stdbuf_bin, "-oL", self.midi_capture_bin, "-p", port]
 
     def _read_midi_stream(self, process: subprocess.Popen[Any], log_path: Path) -> None:
         stream = process.stdout
