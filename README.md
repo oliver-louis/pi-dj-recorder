@@ -2,7 +2,7 @@
 
 A LAN-first FastAPI web app for recording DJ mixes from an Allen & Heath Xone:96 on a Raspberry Pi.
 
-It records the Xone:96 USB capture stream with FFmpeg, saves stereo 24-bit WAV files, provides browser-based recording control, live metering, waveform playback and scrubbing, and MIDI-derived on-air logging for later tracklist work.
+It records the Xone:96 USB capture stream with FFmpeg, saves stereo WAV, FLAC, or MP3 files, provides browser-based recording control, live metering, waveform playback and scrubbing, and MIDI-derived on-air logging for later tracklist work.
 
 This project is currently tuned for one real-world setup:
 
@@ -16,7 +16,8 @@ This project is currently tuned for one real-world setup:
 ## Features
 
 - Start and stop recordings from a browser
-- Stop recordings with `SIGINT` so WAV headers finalise cleanly
+- Select WAV, FLAC, or MP3 for each recording, with a persistent default
+- Stop recordings with `SIGINT` so output files finalise cleanly
 - Prevent concurrent recordings
 - Optional custom mix names with timestamped filenames
 - Live stereo peak/RMS meters in the Record view
@@ -32,14 +33,20 @@ This project is currently tuned for one real-world setup:
 
 ### Audio recording
 
-The app starts FFmpeg with this command shape:
+The app captures and meters the same stereo signal for every format, then applies the selected encoder:
 
 ```bash
 ffmpeg -f alsa -channels 12 -sample_rate 48000 -sample_fmt s32 \
   -i plughw:X2,0 \
-  -filter_complex "pan=stereo|c0=c10|c1=c11" \
-  -c:a pcm_s24le /home/copper/mixes/mix_YYYY-MM-DD_HH-MM-SS.wav
+  -filter_complex "pan=stereo|c0=c10|c1=c11,astats=metadata=1:reset=1,..." \
+  ENCODER_ARGS /home/copper/mixes/mix_YYYY-MM-DD_HH-MM-SS.EXT
 ```
+
+The supported outputs are 24-bit PCM WAV, 24-bit FLAC at compression level 5,
+and constant 320 kbps MP3 using `libmp3lame`. The app checks encoder support
+when it starts and disables formats missing from the installed FFmpeg build.
+`ffprobe`, installed with the Raspberry Pi OS FFmpeg package, supplies duration
+metadata for waveform generation.
 
 Recording is controlled by a FastAPI backend. The frontend is plain HTML/CSS/JS, served directly by FastAPI.
 
@@ -201,6 +208,8 @@ Environment variables:
   default: `30`
 - `PI_RECORDER_READY_TIMEOUT_SECONDS`
   default: `8`; maximum time to wait for FFmpeg to confirm that audio is being written
+- `PI_RECORDER_FFPROBE_BIN`
+  default: `ffprobe`; executable used to read recording durations
 
 The MIDI logger runs `aseqdump` through GNU `stdbuf`, which is provided by the
 standard `coreutils` package on Raspberry Pi OS. This keeps mixer events
@@ -224,6 +233,7 @@ Main routes:
 - `POST /api/recordings/stop-discard`
 - `POST /api/metering/start`
 - `POST /api/metering/stop`
+- `GET /api/storage`
 - `GET /api/recordings`
 - `PATCH /api/recordings/{filename}`
 - `DELETE /api/recordings/{filename}`

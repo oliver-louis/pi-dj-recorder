@@ -28,6 +28,20 @@ class RecordingFile:
     onair_log_available: bool = False
     onair_download_url: str | None = None
     track_ids_export_url: str | None = None
+    format: str = "wav"
+    media_type: str = "audio/wav"
+
+
+@dataclass(frozen=True)
+class StorageInfo:
+    recordings_path: str
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    recordings_bytes: int
+    used_percent: float
+    free_percent: float
+    low_space: bool
 
 
 @dataclass(frozen=True)

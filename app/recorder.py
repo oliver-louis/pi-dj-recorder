@@ -9,7 +9,7 @@ from app.services.errors import (
     TrackIdExportError,
     WaveformGenerationError,
 )
-from app.services.models import MeterChannel, MeterState, MidiChannelState, RecordingFile, RecordingStatus, WaveformData
+from app.services.models import MeterChannel, MeterState, MidiChannelState, RecordingFile, RecordingStatus, StorageInfo, WaveformData
 from app.services.parsers import AstatsParser
 from app.services.recorder import Recorder
 from app.services.recordings_store import DEFAULT_RECORDINGS_DIR
@@ -28,6 +28,7 @@ __all__ = [
     "RecorderError",
     "RecordingFile",
     "RecordingStatus",
+    "StorageInfo",
     "TrackIdExportError",
     "WaveformData",
     "WaveformGenerationError",

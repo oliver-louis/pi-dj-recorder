@@ -13,6 +13,7 @@ from typing import Any, Callable
 from app.services.errors import DeviceUnavailableError, NotMeteringError
 from app.services.models import MeterState, RecordingStatus
 from app.services.parsers import AstatsParser
+from app.services.recording_formats import recording_format_for_filename
 
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,7 @@ class RecordingRuntimeService:
                 self._meter_state = self.idle_meter_state()
 
     def build_ffmpeg_command(self, output_path: Path) -> list[str]:
+        format_spec = recording_format_for_filename(output_path)
         return [
             self.ffmpeg_bin,
             "-nostats",
@@ -435,8 +437,7 @@ class RecordingRuntimeService:
                 "ametadata=mode=print:key=lavfi.astats.2.Peak_level,"
                 "ametadata=mode=print:key=lavfi.astats.2.RMS_level"
             ),
-            "-c:a",
-            "pcm_s24le",
+            *format_spec.ffmpeg_args,
             str(output_path),
         ]
 

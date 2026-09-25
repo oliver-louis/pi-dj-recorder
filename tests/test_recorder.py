@@ -5,10 +5,14 @@ import subprocess
 import threading
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 
 import pytest
 
 from app.recorder import AstatsParser, AlreadyRecordingError, DeviceUnavailableError, NotRecordingError, Recorder, RecorderError, WaveformGenerationError
+from app.services.recording_formats import recording_format_capabilities
+from app.services.recordings_store import RecordingsStore
+from app.services.waveforms import WaveformService
 
 
 class FakeProcess:
@@ -161,6 +165,103 @@ def test_start_creates_expected_command(monkeypatch, tmp_path):
     assert "ametadata=mode=print:key=lavfi.astats.2.RMS_level" in command[17]
     assert command[-2:] == ["pcm_s24le", str(tmp_path / status.current_filename)]
     assert any(process.command == midi_command() for process in processes)
+
+
+@pytest.mark.parametrize(
+    ("recording_format", "extension", "encoder_args"),
+    [
+        (
+            "flac",
+            ".flac",
+            [
+                "-c:a",
+                "flac",
+                "-sample_fmt",
+                "s32",
+                "-bits_per_raw_sample",
+                "24",
+                "-compression_level",
+                "5",
+            ],
+        ),
+        ("mp3", ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k"]),
+    ],
+)
+def test_start_builds_compressed_format_command(monkeypatch, tmp_path, recording_format, extension, encoder_args):
+    processes = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, **kwargs: processes.append(FakeProcess(command, **kwargs)) or processes[-1],
+    )
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+
+    status = recorder.start(recording_format=recording_format)
+
+    assert status.current_filename.endswith(extension)
+    command = processes[0].command
+    encoder_start = command.index("-c:a")
+    assert command[encoder_start:-1] == encoder_args
+    assert command[-1] == str(tmp_path / status.current_filename)
+
+
+def test_recording_format_capabilities_parse_encoders_and_cache(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                " A....D pcm_s24le            PCM signed 24-bit little-endian\n"
+                " A....D flac                 FLAC\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    first = recording_format_capabilities("ffmpeg-capability-test")
+    second = recording_format_capabilities("ffmpeg-capability-test")
+
+    assert calls == [["ffmpeg-capability-test", "-hide_banner", "-encoders"]]
+    assert [item["available"] for item in first] == [True, True, False]
+    assert first[2]["reason"] == "FFmpeg encoder 'libmp3lame' is not available."
+    assert second == first
+
+
+def test_start_rejects_format_with_missing_encoder(monkeypatch, tmp_path):
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    monkeypatch.setattr(
+        recorder,
+        "recording_format_capabilities",
+        lambda: [
+            {"id": "wav", "label": "WAV", "available": True, "reason": None},
+            {"id": "flac", "label": "FLAC", "available": True, "reason": None},
+            {
+                "id": "mp3",
+                "label": "MP3",
+                "available": False,
+                "reason": "FFmpeg encoder 'libmp3lame' is not available.",
+            },
+        ],
+    )
+
+    with pytest.raises(DeviceUnavailableError, match="libmp3lame"):
+        recorder.start(recording_format="mp3")
+
+
+def test_recording_format_probe_failure_disables_all_formats(monkeypatch):
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 5)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    capabilities = recording_format_capabilities("ffmpeg-timeout-test")
+
+    assert all(item["available"] is False for item in capabilities)
+    assert all(item["reason"] == "Timed out checking FFmpeg recording formats." for item in capabilities)
 
 
 def test_second_start_raises(monkeypatch, tmp_path):
@@ -334,6 +435,147 @@ def test_recent_recordings_filters_and_sorts(tmp_path):
     assert [file.name for file in files] == [new_file.name, old_file.name]
 
 
+def test_recent_recordings_lists_all_supported_formats(tmp_path):
+    store = RecordingsStore(tmp_path)
+    filenames = [
+        "vinyl_2026-05-06_01-00-00.wav",
+        "vinyl_2026-05-06_02-00-00.flac",
+        "vinyl_2026-05-06_03-00-00.mp3",
+    ]
+    for filename in filenames:
+        (tmp_path / filename).write_bytes(b"audio")
+    (tmp_path / "vinyl_2026-05-06_04-00-00.aac").write_bytes(b"skip")
+
+    files = store.recent_recordings()
+
+    assert {file.name for file in files} == set(filenames)
+    assert {file.format for file in files} == {"wav", "flac", "mp3"}
+    assert {file.media_type for file in files} == {"audio/wav", "audio/flac", "audio/mpeg"}
+
+
+def test_unique_filename_prevents_cross_format_sidecar_collisions(tmp_path):
+    store = RecordingsStore(tmp_path)
+    (tmp_path / "mix_2026-05-06_01-00-00.wav").write_bytes(b"wav")
+    (tmp_path / "mix_2026-05-06_02-00-00.midi.jsonl").write_text("{}\n")
+
+    media_collision = store.unique_filename("mix", "2026-05-06_01-00-00", recording_format="mp3")
+    sidecar_collision = store.unique_filename("mix", "2026-05-06_02-00-00", recording_format="flac")
+
+    assert media_collision == "mix_2026-05-06_01-00-00-2.mp3"
+    assert sidecar_collision == "mix_2026-05-06_02-00-00-2.flac"
+
+
+def test_rename_flac_preserves_extension_and_sidecars(tmp_path):
+    store = RecordingsStore(tmp_path)
+    original = tmp_path / "mix_2026-05-06_01-00-00.flac"
+    original.write_bytes(b"flac")
+    store.midi_log_path_for_name(original.name).write_text("{}\n")
+    store.onair_log_path_for_name(original.name).write_text("{}\n")
+
+    renamed = store.rename_recording(original.name, "Main Room")
+
+    assert renamed.name == "main-room_2026-05-06_01-00-00.flac"
+    assert store.midi_log_path_for_name(renamed.name).exists()
+    assert store.onair_log_path_for_name(renamed.name).exists()
+
+
+def test_track_id_export_uses_compressed_recording_stem(tmp_path):
+    recorder = Recorder(tmp_path, device_check_enabled=False)
+    filename = "mix_2026-05-12_22-48-36.mp3"
+    (tmp_path / filename).write_bytes(b"mp3")
+    recorder._onair_log_path_for_recording(filename).write_text(
+        "\n".join(
+                [
+                    f'{{"type":"midi_logging_started","recording_filename":"{filename}","time_seconds":0.0}}',
+                    '{"type":"channel_in","channel":2,"time_seconds":5.0}',
+                    '{"type":"midi_logging_stopped","time_seconds":60.0}',
+            ]
+        )
+        + "\n"
+    )
+
+    export_name, payload = recorder.track_ids_export_for_recording(filename)
+
+    assert export_name == "mix_2026-05-12_22-48-36.track-ids.json"
+    assert len(json.loads(payload)) == 1
+
+
+def test_storage_info_reports_filesystem_and_recursive_artifact_usage(tmp_path, monkeypatch):
+    store = RecordingsStore(tmp_path)
+    (tmp_path / "mix.wav").write_bytes(b"wav")
+    (tmp_path / "mix.midi.jsonl").write_bytes(b"midi")
+    (tmp_path / ".hidden").write_bytes(b"hidden")
+    cache = tmp_path / ".waveforms"
+    cache.mkdir()
+    (cache / "mix.wav.json").write_bytes(b"cache")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "not-counted").write_bytes(b"outside")
+    (tmp_path / "linked-file").symlink_to(outside / "not-counted")
+    (tmp_path / "linked-directory").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(
+        "app.services.recordings_store.shutil.disk_usage",
+        lambda path: SimpleNamespace(total=1_000, used=750, free=250),
+    )
+
+    info = store.storage_info()
+
+    assert info.recordings_path == str(tmp_path.resolve())
+    assert info.total_bytes == 1_000
+    assert info.used_bytes == 750
+    assert info.free_bytes == 250
+    assert info.recordings_bytes == 3 + 4 + 6 + 5
+    assert info.used_percent == 75.0
+    assert info.free_percent == 25.0
+    assert info.low_space is False
+
+
+@pytest.mark.parametrize(
+    ("total", "used", "free", "low_space"),
+    [(1_000, 900, 100, False), (1_000, 901, 99, True), (0, 0, 0, False)],
+)
+def test_storage_info_low_space_threshold_and_zero_capacity(tmp_path, monkeypatch, total, used, free, low_space):
+    store = RecordingsStore(tmp_path)
+    monkeypatch.setattr(
+        "app.services.recordings_store.shutil.disk_usage",
+        lambda path: SimpleNamespace(total=total, used=used, free=free),
+    )
+
+    info = store.storage_info()
+
+    assert info.low_space is low_space
+    assert info.used_percent == (used / total * 100 if total else 0.0)
+    assert info.free_percent == (free / total * 100 if total else 0.0)
+
+
+def test_storage_info_skips_file_that_disappears_during_scan(tmp_path, monkeypatch):
+    class MissingEntry:
+        def is_dir(self, *, follow_symlinks):
+            return False
+
+        def is_file(self, *, follow_symlinks):
+            return True
+
+        def stat(self, *, follow_symlinks):
+            raise FileNotFoundError
+
+    class Entries:
+        def __enter__(self):
+            return iter([MissingEntry()])
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    store = RecordingsStore(tmp_path)
+    monkeypatch.setattr("app.services.recordings_store.os.scandir", lambda path: Entries())
+    monkeypatch.setattr(
+        "app.services.recordings_store.shutil.disk_usage",
+        lambda path: SimpleNamespace(total=1_000, used=500, free=500),
+    )
+
+    assert store.storage_info().recordings_bytes == 0
+
+
 def test_path_for_recording_rejects_invalid_name(tmp_path):
     recorder = Recorder(tmp_path, device_check_enabled=False)
 
@@ -422,11 +664,21 @@ def test_settings_bootstrap_preserves_current_defaults_when_missing(tmp_path):
 
     assert settings["onair_threshold"] == 30
     assert settings["default_mix_prefix"] == "mix"
+    assert settings["recording_format"] == "wav"
     assert settings["track_id_merge_gap_seconds"] == 10.0
     assert settings["auto_enable_metering"] is False
     assert settings["theme"] == "dark"
     assert settings["confirm_delete_recordings"] is True
     assert settings["stop_discard_countdown_seconds"] == 3
+
+
+def test_invalid_persisted_recording_format_falls_back_to_wav(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"recording_format": "aac"}))
+
+    recorder = Recorder(tmp_path, config_path=config_path, device_check_enabled=False)
+
+    assert recorder.settings_payload()["settings"]["recording_format"] == "wav"
 
 
 def test_device_check_reports_unavailable(monkeypatch, tmp_path):
@@ -1589,6 +1841,34 @@ def test_waveform_generation_and_cache_hit(monkeypatch, tmp_path):
     assert second.samples == first.samples
     assert calls["extract"] == 1
     assert (tmp_path / ".waveforms" / f"{filename}.json").exists()
+
+
+@pytest.mark.parametrize("extension", ["wav", "flac", "mp3"])
+def test_recording_duration_uses_ffprobe_for_every_format(monkeypatch, tmp_path, extension):
+    path = tmp_path / f"mix_2026-05-06_01-00-00.{extension}"
+    path.write_bytes(b"audio")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="123.456\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    service = WaveformService("ffmpeg", "ffprobe-custom", RecordingsStore(tmp_path))
+
+    duration = service.recording_duration_seconds(path)
+
+    assert duration == pytest.approx(123.456)
+    assert commands == [[
+        "ffprobe-custom",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]]
 
 
 def test_waveform_cache_invalidates_on_file_change(monkeypatch, tmp_path):

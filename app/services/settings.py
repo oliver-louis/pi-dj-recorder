@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.services.recording_formats import normalize_recording_format
+
 
 @dataclass(frozen=True)
 class AppSettings:
@@ -22,6 +24,7 @@ class AppSettings:
     theme: str
     confirm_delete_recordings: bool
     stop_discard_countdown_seconds: int
+    recording_format: str = "wav"
 
 
 class SettingsStore:
@@ -54,6 +57,10 @@ class SettingsStore:
                 raw.get("prolink_virtual_player_number", self.defaults.prolink_virtual_player_number)
             ),
             default_mix_prefix=str(raw.get("default_mix_prefix") or self.defaults.default_mix_prefix),
+            recording_format=normalize_recording_format(
+                raw.get("recording_format"),
+                self.defaults.recording_format,
+            ),
             track_id_merge_gap_seconds=float(
                 raw.get("track_id_merge_gap_seconds", self.defaults.track_id_merge_gap_seconds)
             ),

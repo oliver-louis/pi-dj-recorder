@@ -23,9 +23,10 @@ from app.services.errors import (
 )
 from app.services.midi_daemon import MISSING, MidiDaemonService
 from app.services.midi_logs import MidiLoggingService
-from app.services.models import MeterState, RecordingFile, RecordingStatus, WaveformData
+from app.services.models import MeterState, RecordingFile, RecordingStatus, StorageInfo, WaveformData
 from app.services.parsers import AstatsParser, parse_midi_line
 from app.services.recording_runtime import RecordingRuntimeService
+from app.services.recording_formats import get_recording_format, recording_format_capabilities
 from app.services.recordings_store import DEFAULT_RECORDINGS_DIR, RecordingsStore
 from app.services.settings import AppSettings, SettingsStore
 from app.services.track_ids import TrackIdExporter
@@ -53,6 +54,7 @@ class Recorder:
         recordings_dir: Path = DEFAULT_RECORDINGS_DIR,
         *,
         ffmpeg_bin: str = "ffmpeg",
+        ffprobe_bin: str = "ffprobe",
         input_device: str = "plughw:X2,0",
         midi_capture_bin: str = "aseqdump",
         stdbuf_bin: str = "stdbuf",
@@ -86,6 +88,7 @@ class Recorder:
                 prolink_metadata_enabled=True,
                 prolink_virtual_player_number=4,
                 default_mix_prefix="mix",
+                recording_format="wav",
                 track_id_merge_gap_seconds=10.0,
                 auto_enable_metering=False,
                 theme="dark",
@@ -95,6 +98,7 @@ class Recorder:
         )
         loaded_settings = self._settings_store.load()
         self.ffmpeg_bin = ffmpeg_bin
+        self.ffprobe_bin = ffprobe_bin
         self.input_device = loaded_settings.input_device
         self.midi_capture_bin = midi_capture_bin
         self.stdbuf_bin = stdbuf_bin
@@ -112,6 +116,7 @@ class Recorder:
         except ValueError:
             self.prolink_onair_channel_to_player = {"2": 2, "3": 3}
         self.default_mix_prefix = loaded_settings.default_mix_prefix
+        self.recording_format = loaded_settings.recording_format
         self.track_id_merge_gap_seconds = loaded_settings.track_id_merge_gap_seconds
         self.auto_enable_metering = loaded_settings.auto_enable_metering
         self.theme = loaded_settings.theme if loaded_settings.theme in {"dark", "light"} else "dark"
@@ -154,7 +159,7 @@ class Recorder:
             onair_threshold=self.onair_threshold,
             on_channel_payload=self._handle_daemon_payload,
         )
-        self._waveforms = WaveformService(store=self._store, ffmpeg_bin=ffmpeg_bin)
+        self._waveforms = WaveformService(store=self._store, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin)
         self._track_ids = TrackIdExporter(store=self._store)
 
     def ensure_recordings_dir(self) -> None:
@@ -186,7 +191,7 @@ class Recorder:
             self._clear_if_process_exited_locked()
             return self._midi_daemon.state_payload()
 
-    def start(self, mix_name: str | None = None) -> RecordingStatus:
+    def start(self, mix_name: str | None = None, recording_format: str | None = None) -> RecordingStatus:
         startup_started_at = monotonic()
         with self._lock:
             self._clear_if_process_exited_locked()
@@ -195,8 +200,11 @@ class Recorder:
             if self._runtime.monitor_process is not None:
                 self._runtime.stop_monitor()
 
+            selected_format = recording_format or self.recording_format
+            get_recording_format(selected_format)
+            self._require_recording_format_available(selected_format)
             self.ensure_recordings_dir()
-            output_path = self.recordings_dir / self._new_filename(mix_name)
+            output_path = self.recordings_dir / self._new_filename(mix_name, selected_format)
             self._runtime.start_recording(
                 output_path,
                 ready_deadline=startup_started_at + self.recording_ready_timeout_seconds,
@@ -279,6 +287,9 @@ class Recorder:
 
     def recent_recordings(self, limit: int = 50) -> list[RecordingFile]:
         return self._store.recent_recordings(limit)
+
+    def storage_info(self) -> StorageInfo:
+        return self._store.storage_info()
 
     def rename_recording(self, filename: str, mix_name: str) -> RecordingFile:
         with self._lock:
@@ -363,6 +374,7 @@ class Recorder:
             editable, busy_reason = self._settings_editability_locked()
             return {
                 "settings": asdict(self._current_settings_locked()),
+                "recording_formats": self.recording_format_capabilities(),
                 "editable": editable,
                 "busy_reason": busy_reason,
                 "midi_devices": midi_devices,
@@ -379,6 +391,7 @@ class Recorder:
         input_device: str,
         onair_threshold: int,
         default_mix_prefix: str,
+        recording_format: str = "wav",
         track_id_merge_gap_seconds: float,
         auto_enable_metering: bool,
         theme: str,
@@ -399,6 +412,9 @@ class Recorder:
             default_mix_prefix = default_mix_prefix.strip()
             if not default_mix_prefix:
                 raise ValueError("Default mix prefix cannot be empty.")
+            get_recording_format(recording_format)
+            if not self._recording_format_available(recording_format):
+                raise ValueError(self._recording_format_unavailable_message(recording_format))
             if theme not in {"dark", "light"}:
                 raise ValueError("Invalid theme.")
             if not 0 <= int(onair_threshold) <= 127:
@@ -436,6 +452,7 @@ class Recorder:
             self.prolink_metadata_enabled = bool(prolink_metadata_enabled)
             self.prolink_virtual_player_number = int(prolink_virtual_player_number)
             self.default_mix_prefix = default_mix_prefix
+            self.recording_format = recording_format
             self.track_id_merge_gap_seconds = float(track_id_merge_gap_seconds)
             self.auto_enable_metering = bool(auto_enable_metering)
             self.theme = theme
@@ -462,6 +479,7 @@ class Recorder:
                     prolink_metadata_enabled=self.prolink_metadata_enabled,
                     prolink_virtual_player_number=self.prolink_virtual_player_number,
                     default_mix_prefix=self.default_mix_prefix,
+                    recording_format=self.recording_format,
                     track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
                     auto_enable_metering=self.auto_enable_metering,
                     theme=self.theme,
@@ -496,15 +514,26 @@ class Recorder:
     def is_safe_recording_name(filename: str) -> bool:
         return RecordingsStore.is_safe_recording_name(filename)
 
-    def _new_filename(self, mix_name: str | None = None) -> str:
-        return self._store.new_filename(mix_name, default_prefix=self.default_mix_prefix)
+    def _new_filename(self, mix_name: str | None = None, recording_format: str | None = None) -> str:
+        return self._store.new_filename(
+            mix_name,
+            default_prefix=self.default_mix_prefix,
+            recording_format=recording_format or self.recording_format,
+        )
 
-    def _unique_filename(self, mix_name: str | None, timestamp: str, existing_path: Path | None = None) -> str:
+    def _unique_filename(
+        self,
+        mix_name: str | None,
+        timestamp: str,
+        existing_path: Path | None = None,
+        recording_format: str | None = None,
+    ) -> str:
         return self._store.unique_filename(
             mix_name,
             timestamp,
             existing_path,
             default_prefix=self.default_mix_prefix,
+            recording_format=recording_format or self.recording_format,
         )
 
     def _slugify(self, mix_name: str | None) -> str:
@@ -571,6 +600,7 @@ class Recorder:
             prolink_metadata_enabled=self.prolink_metadata_enabled,
             prolink_virtual_player_number=self.prolink_virtual_player_number,
             default_mix_prefix=self.default_mix_prefix,
+            recording_format=self.recording_format,
             track_id_merge_gap_seconds=self.track_id_merge_gap_seconds,
             auto_enable_metering=self.auto_enable_metering,
             theme=self.theme,
@@ -686,8 +716,33 @@ class Recorder:
     def _write_waveform_cache(self, path: Path, payload: dict[str, Any]) -> None:
         self._store.write_waveform_cache(path, payload)
 
+    def _recording_duration_seconds(self, path: Path) -> float:
+        return self._waveforms.recording_duration_seconds(path)
+
     def _wav_duration_seconds(self, path: Path) -> float:
-        return self._waveforms.wav_duration_seconds(path)
+        return self._recording_duration_seconds(path)
+
+    def recording_format_capabilities(self) -> list[dict[str, object]]:
+        return recording_format_capabilities(self.ffmpeg_bin)
+
+    def _recording_format_available(self, recording_format: str) -> bool:
+        return any(
+            capability["id"] == recording_format and capability["available"]
+            for capability in self.recording_format_capabilities()
+        )
+
+    def _recording_format_unavailable_message(self, recording_format: str) -> str:
+        spec = get_recording_format(recording_format)
+        capability = next(
+            (item for item in self.recording_format_capabilities() if item["id"] == recording_format),
+            None,
+        )
+        reason = capability.get("reason") if capability else None
+        return str(reason or f"FFmpeg encoder '{spec.encoder}' is not available.")
+
+    def _require_recording_format_available(self, recording_format: str) -> None:
+        if not self._recording_format_available(recording_format):
+            raise DeviceUnavailableError(self._recording_format_unavailable_message(recording_format))
 
     @staticmethod
     def _target_waveform_samples(duration_seconds: float) -> int:

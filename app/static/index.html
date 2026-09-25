@@ -129,10 +129,17 @@
           </div>
         </dl>
 
-        <label class="field">
-          <span>Mix name</span>
-          <input id="mix-name" type="text" maxlength="120" autocomplete="off">
-        </label>
+        <div class="recording-options">
+          <label class="field">
+            <span>Mix name</span>
+            <input id="mix-name" type="text" maxlength="120" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Recording format</span>
+            <select id="recording-format" aria-describedby="recording-format-message"></select>
+          </label>
+        </div>
+        <p id="recording-format-message" class="field-message" role="status"></p>
 
         <div class="actions">
           <button id="start-button" class="primary" type="button">Start Recording</button>

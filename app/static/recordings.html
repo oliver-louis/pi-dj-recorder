@@ -15,7 +15,7 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Saved WAV files</p>
+          <p class="eyebrow">Saved recordings</p>
           <h1>Recordings</h1>
         </div>
         <div class="topbar-controls">
@@ -33,6 +33,32 @@
       </nav>
 
       <section class="panel">
+        <section id="storage-summary" class="storage-summary" aria-labelledby="storage-title" aria-busy="true">
+          <div class="storage-head">
+            <div>
+              <h2 id="storage-title">Storage</h2>
+              <p id="storage-path" class="storage-path">Loading storage information…</p>
+            </div>
+            <p id="storage-warning" class="storage-warning" role="status" hidden></p>
+          </div>
+          <div
+            id="storage-progress"
+            class="storage-progress"
+            role="progressbar"
+            aria-label="Device storage used"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <span id="storage-progress-fill" class="storage-progress-fill"></span>
+          </div>
+          <dl class="storage-metrics">
+            <div><dt>Total capacity</dt><dd id="storage-total">—</dd></div>
+            <div><dt>Device used</dt><dd id="storage-used">—</dd></div>
+            <div><dt>Recordings</dt><dd id="storage-recordings">—</dd></div>
+            <div><dt>Remaining</dt><dd id="storage-free">—</dd></div>
+          </dl>
+        </section>
         <div id="recordings-list" class="recordings-list"></div>
         <p id="message" class="message" role="status"></p>
       </section>

@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.services.errors import RecorderError
-from app.services.models import RecordingFile
+from app.services.models import RecordingFile, StorageInfo
+from app.services.recording_formats import (
+    RECORDING_FORMATS,
+    get_recording_format,
+    recording_format_for_filename,
+)
 
 
 DEFAULT_RECORDINGS_DIR = Path("/home/copper/mixes")
-SAFE_WAV_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,79}_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.wav$")
-TIMESTAMP_IN_NAME = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?:-\d+)?\.wav$")
+SAFE_RECORDING_NAME = re.compile(
+    r"^[a-z0-9][a-z0-9_-]{0,79}_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.(?:wav|flac|mp3)$"
+)
+TIMESTAMP_IN_NAME = re.compile(
+    r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})(?:-\d+)?\.(?:wav|flac|mp3)$"
+)
 UNSAFE_SLUG_CHARS = re.compile(r"[^a-z0-9]+")
 
 
@@ -31,14 +42,52 @@ class RecordingsStore:
         self.ensure_recordings_dir()
         files = [
             path
-            for path in self.recordings_dir.glob("*.wav")
+            for path in self.recordings_dir.iterdir()
             if path.is_file() and self.is_safe_recording_name(path.name)
         ]
         files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         return [self.recording_file(path) for path in files[:limit]]
 
+    def storage_info(self) -> StorageInfo:
+        self.ensure_recordings_dir()
+        usage = shutil.disk_usage(self.recordings_dir)
+        total_bytes = int(usage.total)
+        used_bytes = int(usage.used)
+        free_bytes = int(usage.free)
+        if total_bytes > 0:
+            used_percent = used_bytes / total_bytes * 100
+            free_percent = free_bytes / total_bytes * 100
+        else:
+            used_percent = 0.0
+            free_percent = 0.0
+        return StorageInfo(
+            recordings_path=str(self.recordings_dir.resolve()),
+            total_bytes=total_bytes,
+            used_bytes=used_bytes,
+            free_bytes=free_bytes,
+            recordings_bytes=self._directory_size(self.recordings_dir),
+            used_percent=used_percent,
+            free_percent=free_percent,
+            low_space=total_bytes > 0 and free_percent < 10,
+        )
+
+    def _directory_size(self, directory: Path) -> int:
+        total = 0
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        total += self._directory_size(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except FileNotFoundError:
+                    # A recording may be renamed or deleted while this snapshot is built.
+                    continue
+        return total
+
     def recording_file(self, path: Path) -> RecordingFile:
         stat = path.stat()
+        format_spec = recording_format_for_filename(path)
         modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
         midi_path = self.midi_log_path_for_name(path.name)
         onair_path = self.onair_log_path_for_name(path.name)
@@ -46,6 +95,8 @@ class RecordingsStore:
         onair_available = onair_path.is_file()
         return RecordingFile(
             name=path.name,
+            format=format_spec.id,
+            media_type=format_spec.media_type,
             size=stat.st_size,
             modified_time=modified,
             download_url=f"/api/recordings/{path.name}/download",
@@ -74,7 +125,7 @@ class RecordingsStore:
 
     def sidecar_path_for_recording(self, filename: str, suffix: str) -> Path:
         recording_path = self.path_for_recording(filename)
-        path = self.recordings_dir / f"{recording_path.name[:-4]}{suffix}"
+        path = self.recordings_dir / f"{recording_path.stem}{suffix}"
         try:
             resolved = path.resolve(strict=True)
         except FileNotFoundError as exc:
@@ -92,9 +143,20 @@ class RecordingsStore:
     def onair_log_path_for_recording(self, filename: str) -> Path:
         return self.sidecar_path_for_recording(filename, ".onair.jsonl")
 
-    def new_filename(self, mix_name: str | None = None, *, default_prefix: str = "mix") -> str:
+    def new_filename(
+        self,
+        mix_name: str | None = None,
+        *,
+        default_prefix: str = "mix",
+        recording_format: str = "wav",
+    ) -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        return self.unique_filename(mix_name, timestamp, default_prefix=default_prefix)
+        return self.unique_filename(
+            mix_name,
+            timestamp,
+            default_prefix=default_prefix,
+            recording_format=recording_format,
+        )
 
     def unique_filename(
         self,
@@ -103,18 +165,31 @@ class RecordingsStore:
         existing_path: Path | None = None,
         *,
         default_prefix: str = "mix",
+        recording_format: str = "wav",
     ) -> str:
+        format_spec = get_recording_format(recording_format)
         slug = self.slugify(mix_name, default_prefix=default_prefix)
-        candidate = f"{slug}_{timestamp}.wav"
-        candidate_path = self.recordings_dir / candidate
-        if not candidate_path.exists() or candidate_path == existing_path:
-            return candidate
+        candidate_stem = f"{slug}_{timestamp}"
+        if self._stem_available(candidate_stem, existing_path=existing_path):
+            return f"{candidate_stem}{format_spec.extension}"
         for index in range(2, 1000):
-            candidate = f"{slug}_{timestamp}-{index}.wav"
-            candidate_path = self.recordings_dir / candidate
-            if not candidate_path.exists() or candidate_path == existing_path:
-                return candidate
+            candidate_stem = f"{slug}_{timestamp}-{index}"
+            if self._stem_available(candidate_stem, existing_path=existing_path):
+                return f"{candidate_stem}{format_spec.extension}"
         raise RecorderError("Could not generate a unique filename.")
+
+    def _stem_available(self, stem: str, *, existing_path: Path | None = None) -> bool:
+        existing_resolved = existing_path.resolve() if existing_path is not None else None
+        for spec in RECORDING_FORMATS.values():
+            candidate = self.recordings_dir / f"{stem}{spec.extension}"
+            if candidate.exists() and (existing_resolved is None or candidate.resolve() != existing_resolved):
+                return False
+        if existing_path is not None and stem == existing_path.stem:
+            return True
+        return not any(
+            (self.recordings_dir / f"{stem}{suffix}").exists()
+            for suffix in (".midi.jsonl", ".onair.jsonl")
+        )
 
     def rename_recording(self, filename: str, mix_name: str, *, current_path: Path | None = None) -> RecordingFile:
         path = self.path_for_recording(filename)
@@ -124,7 +199,13 @@ class RecordingsStore:
         old_midi_path = self.midi_log_path_for_name(path.name)
         old_onair_path = self.onair_log_path_for_name(path.name)
         timestamp = self.timestamp_from_filename(path.name)
-        target = self.recordings_dir / self.unique_filename(mix_name, timestamp, existing_path=path)
+        recording_format = recording_format_for_filename(path).id
+        target = self.recordings_dir / self.unique_filename(
+            mix_name,
+            timestamp,
+            existing_path=path,
+            recording_format=recording_format,
+        )
         if target == path:
             return self.recording_file(path)
         path.rename(target)
@@ -155,10 +236,10 @@ class RecordingsStore:
         return self.ensure_waveform_cache_dir() / f"{filename}.json"
 
     def midi_log_path_for_name(self, filename: str) -> Path:
-        return self.recordings_dir / f"{filename[:-4]}.midi.jsonl"
+        return self.recordings_dir / f"{Path(filename).stem}.midi.jsonl"
 
     def onair_log_path_for_name(self, filename: str) -> Path:
-        return self.recordings_dir / f"{filename[:-4]}.onair.jsonl"
+        return self.recordings_dir / f"{Path(filename).stem}.onair.jsonl"
 
     @staticmethod
     def waveform_signature(stat: object) -> str:
@@ -177,7 +258,7 @@ class RecordingsStore:
 
     @staticmethod
     def is_safe_recording_name(filename: str) -> bool:
-        return bool(SAFE_WAV_NAME.fullmatch(filename))
+        return bool(SAFE_RECORDING_NAME.fullmatch(filename))
 
     @staticmethod
     def slugify(mix_name: str | None, default_prefix: str = "mix") -> str:

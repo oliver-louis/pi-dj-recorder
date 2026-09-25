@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   prolink_metadata_enabled: true,
   prolink_virtual_player_number: 4,
   default_mix_prefix: "mix",
+  recording_format: "wav",
   track_id_merge_gap_seconds: 10,
   auto_enable_metering: false,
   theme: "dark",
@@ -23,6 +24,13 @@ let activePlayerAudio = null;
 let dashboardMeteringActive = false;
 let settingsSnapshot = null;
 let autoMeteringAttempted = false;
+let recordingFormatCapabilities = [
+  { id: "wav", label: "WAV — 24-bit lossless", available: true, reason: null },
+  { id: "flac", label: "FLAC — 24-bit lossless", available: true, reason: null },
+  { id: "mp3", label: "MP3 — 320 kbps", available: true, reason: null },
+];
+let dashboardRecordingActive = false;
+let dashboardDeviceAvailable = false;
 
 function currentSettings() {
   return { ...DEFAULT_SETTINGS, ...(settingsSnapshot?.settings || {}) };
@@ -112,7 +120,57 @@ function setupCollapsibleSections() {
 function defaultRecordingFilename() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, "0");
-  return `${currentSettings().default_mix_prefix}_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.wav`;
+  const selector = document.getElementById("recording-format");
+  const extension = selector?.value || currentSettings().recording_format || "wav";
+  return `${currentSettings().default_mix_prefix}_${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.${extension}`;
+}
+
+function buildRecordingFormatOptions(select, selectedFormat) {
+  if (!select) return;
+  select.replaceChildren(...recordingFormatCapabilities.map((format) => {
+    const option = document.createElement("option");
+    option.value = format.id;
+    option.textContent = format.available ? format.label : `${format.label} — unavailable`;
+    option.disabled = !format.available;
+    option.title = format.reason || "";
+    return option;
+  }));
+  select.value = selectedFormat || "wav";
+}
+
+function selectedRecordingFormatCapability() {
+  const selected = document.getElementById("recording-format")?.value || currentSettings().recording_format;
+  return recordingFormatCapabilities.find((format) => format.id === selected) || null;
+}
+
+function updateRecordingFormatState() {
+  const select = document.getElementById("recording-format");
+  if (!select) return;
+  const capability = selectedRecordingFormatCapability();
+  const available = Boolean(capability?.available);
+  select.disabled = dashboardRecordingActive;
+  const startButton = document.getElementById("start-button");
+  if (startButton) {
+    startButton.disabled = dashboardRecordingActive || !dashboardDeviceAvailable || !available;
+  }
+  const message = document.getElementById("recording-format-message");
+  if (message) message.textContent = available ? "" : capability?.reason || "This recording format is unavailable.";
+  const mixName = document.getElementById("mix-name");
+  if (mixName && (!mixName.value.trim() || document.activeElement !== mixName)) {
+    mixName.placeholder = defaultRecordingFilename();
+  }
+}
+
+function updateRecordingFormatControls(payload) {
+  if (Array.isArray(payload.recording_formats) && payload.recording_formats.length) {
+    recordingFormatCapabilities = payload.recording_formats;
+  }
+  const settings = payload.settings || {};
+  const recordSelect = document.getElementById("recording-format");
+  const currentSelection = recordSelect?.options.length ? recordSelect.value : settings.recording_format;
+  buildRecordingFormatOptions(recordSelect, currentSelection || "wav");
+  buildRecordingFormatOptions(document.getElementById("settings-recording-format"), settings.recording_format || "wav");
+  updateRecordingFormatState();
 }
 
 function setMessage(text, isError = false) {
@@ -153,6 +211,7 @@ async function fetchJson(url, options = {}) {
 
 function syncSettingsSnapshot(payload) {
   settingsSnapshot = payload;
+  updateRecordingFormatControls(payload);
   applyTheme((payload.settings || {}).theme || "dark");
   return payload;
 }
@@ -190,6 +249,8 @@ function updateDashboard(status) {
   pid.textContent = status.pid || "-";
   elapsed.textContent = formatDuration(status.elapsed_seconds);
   size.textContent = formatBytes(status.current_file_size);
+  dashboardRecordingActive = Boolean(status.recording);
+  dashboardDeviceAvailable = Boolean(status.device_available);
   startButton.disabled = status.recording || !status.device_available;
   stopButton.disabled = !status.recording;
   if (stopDiscardButton) stopDiscardButton.disabled = !status.recording;
@@ -198,6 +259,7 @@ function updateDashboard(status) {
     meteringToggleButton.disabled = !status.device_available && !status.recording;
     meteringToggleButton.textContent = dashboardMeteringActive ? "Meters On" : "Meters Off";
   }
+  updateRecordingFormatState();
   updateProlinkMetadata(status.prolink_metadata || {});
 }
 
@@ -368,13 +430,18 @@ async function maybeAutoEnableMetering(status) {
 async function startRecording() {
   const startButton = document.getElementById("start-button");
   startButton.disabled = true;
+  const formatSelect = document.getElementById("recording-format");
+  if (formatSelect) formatSelect.disabled = true;
   setMessage("Starting recording...");
   try {
     const mixName = document.getElementById("mix-name").value.trim();
     const status = await fetchJson("/api/recordings/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mix_name: mixName || null }),
+      body: JSON.stringify({
+        mix_name: mixName || null,
+        recording_format: formatSelect?.value || currentSettings().recording_format,
+      }),
     });
     updateDashboard(status);
     setMessage(`Recording ${status.current_filename}`);
@@ -469,23 +536,23 @@ function renderRecordings(recordings) {
     };
 
     downloadList.append(
-      buildDownloadOption("WAV", recording.download_url, recording.name),
+      buildDownloadOption((recording.format || "wav").toUpperCase(), recording.download_url, recording.name),
       buildDownloadOption(
         "ID's",
         recording.track_ids_export_url,
-        recording.name.replace(/\.wav$/, ".track-ids.json"),
+        recording.name.replace(/\.(?:wav|flac|mp3)$/i, ".track-ids.json"),
         Boolean(recording.track_ids_export_url),
       ),
       buildDownloadOption(
         "onair.jsonl",
         recording.onair_download_url,
-        recording.name.replace(/\.wav$/, ".onair.jsonl"),
+        recording.name.replace(/\.(?:wav|flac|mp3)$/i, ".onair.jsonl"),
         Boolean(recording.onair_log_available && recording.onair_download_url),
       ),
       buildDownloadOption(
         "midi.jsonl",
         recording.midi_download_url,
-        recording.name.replace(/\.wav$/, ".midi.jsonl"),
+        recording.name.replace(/\.(?:wav|flac|mp3)$/i, ".midi.jsonl"),
         Boolean(recording.midi_log_available && recording.midi_download_url),
       ),
     );
@@ -497,7 +564,7 @@ function renderRecordings(recordings) {
     const renameInput = document.createElement("input");
     renameInput.type = "text";
     renameInput.maxLength = 120;
-    renameInput.value = recording.name.replace(/_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.wav$/, "");
+    renameInput.value = recording.name.replace(/_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.(?:wav|flac|mp3)$/i, "");
 
     const rename = document.createElement("button");
     rename.className = "secondary";
@@ -516,6 +583,50 @@ function renderRecordings(recordings) {
     item.append(head, createPlayer(recording), controls);
     return item;
   }));
+}
+
+function formatPercent(value) {
+  const percent = Math.min(100, Math.max(0, Number(value) || 0));
+  return `${percent.toFixed(1)}%`;
+}
+
+function renderStorage(storage) {
+  const summary = document.getElementById("storage-summary");
+  if (!summary) return;
+  const usedPercent = Math.min(100, Math.max(0, Number(storage.used_percent) || 0));
+  const freePercent = Math.min(100, Math.max(0, Number(storage.free_percent) || 0));
+  const progress = document.getElementById("storage-progress");
+  const fill = document.getElementById("storage-progress-fill");
+  const warning = document.getElementById("storage-warning");
+
+  summary.setAttribute("aria-busy", "false");
+  summary.classList.toggle("low", Boolean(storage.low_space));
+  document.getElementById("storage-path").textContent = storage.recordings_path || "Configured recordings directory";
+  document.getElementById("storage-total").textContent = formatBytes(storage.total_bytes);
+  document.getElementById("storage-used").textContent = `${formatBytes(storage.used_bytes)} · ${formatPercent(usedPercent)}`;
+  document.getElementById("storage-recordings").textContent = formatBytes(storage.recordings_bytes);
+  document.getElementById("storage-free").textContent = `${formatBytes(storage.free_bytes)} · ${formatPercent(freePercent)}`;
+  progress.setAttribute("aria-valuenow", usedPercent.toFixed(1));
+  fill.style.width = `${usedPercent}%`;
+  warning.hidden = !storage.low_space;
+  warning.textContent = storage.low_space ? "Storage low — less than 10% remaining." : "";
+}
+
+function renderStorageUnavailable(message = "Storage information is unavailable.") {
+  const summary = document.getElementById("storage-summary");
+  if (!summary) return;
+  summary.setAttribute("aria-busy", "false");
+  summary.classList.remove("low");
+  document.getElementById("storage-path").textContent = message;
+  ["storage-total", "storage-used", "storage-recordings", "storage-free"].forEach((id) => {
+    document.getElementById(id).textContent = "—";
+  });
+  const progress = document.getElementById("storage-progress");
+  progress.setAttribute("aria-valuenow", "0");
+  document.getElementById("storage-progress-fill").style.width = "0%";
+  const warning = document.getElementById("storage-warning");
+  warning.hidden = true;
+  warning.textContent = "";
 }
 
 function createPlayer(recording) {
@@ -799,6 +910,14 @@ async function loadRecordings() {
   }
 }
 
+async function loadStorage() {
+  try {
+    renderStorage(await fetchJson("/api/storage"));
+  } catch (error) {
+    renderStorageUnavailable(error.message);
+  }
+}
+
 async function renameRecording(filename, mixName) {
   const trimmed = mixName.trim();
   if (!trimmed) {
@@ -827,7 +946,7 @@ async function deleteRecording(filename) {
       throw new Error(data.detail || `Request failed with ${response.status}`);
     }
     setMessage("Recording deleted.");
-    await loadRecordings();
+    await Promise.all([loadRecordings(), loadStorage()]);
   } catch (error) {
     setMessage(error.message, true);
   }
@@ -900,6 +1019,7 @@ function updateSettingsPage(payload) {
   const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
   const prolinkVirtualPlayerInput = document.getElementById("settings-prolink-virtual-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
+  const recordingFormatInput = document.getElementById("settings-recording-format");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
   const confirmDeleteInput = document.getElementById("settings-confirm-delete");
@@ -920,6 +1040,7 @@ function updateSettingsPage(payload) {
     !prolinkCh3Input ||
     !prolinkVirtualPlayerInput ||
     !prefixInput ||
+    !recordingFormatInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
     !confirmDeleteInput ||
@@ -942,6 +1063,7 @@ function updateSettingsPage(payload) {
   prolinkCh3Input.value = String(prolinkMapping["3"] ?? prolinkMapping[3] ?? 3);
   prolinkVirtualPlayerInput.value = String(settings.prolink_virtual_player_number ?? 4);
   prefixInput.value = settings.default_mix_prefix || "mix";
+  buildRecordingFormatOptions(recordingFormatInput, settings.recording_format || "wav");
   mergeGapInput.value = String(settings.track_id_merge_gap_seconds ?? 10);
   autoMeteringInput.checked = Boolean(settings.auto_enable_metering);
   confirmDeleteInput.checked = Boolean(settings.confirm_delete_recordings);
@@ -959,6 +1081,7 @@ function updateSettingsPage(payload) {
   prolinkCh3Input.disabled = !editable;
   prolinkVirtualPlayerInput.disabled = !editable;
   prefixInput.disabled = !editable;
+  recordingFormatInput.disabled = !editable;
   mergeGapInput.disabled = !editable;
   autoMeteringInput.disabled = !editable;
   confirmDeleteInput.disabled = !editable;
@@ -975,6 +1098,8 @@ function updateSettingsPage(payload) {
   const warnings = [];
   if (!payload.midi_selected_available) warnings.push("Saved MIDI device is currently unavailable.");
   if (!payload.audio_selected_available) warnings.push("Saved audio device is currently unavailable.");
+  const savedFormat = recordingFormatCapabilities.find((format) => format.id === settings.recording_format);
+  if (savedFormat && !savedFormat.available) warnings.push(savedFormat.reason || "Saved recording format is unavailable.");
   warning.textContent = warnings.join(" ");
   warning.classList.toggle("visible", warnings.length > 0);
 
@@ -1043,6 +1168,7 @@ async function saveSettings() {
   const prolinkCh3Input = document.getElementById("settings-prolink-ch3-player");
   const prolinkVirtualPlayerInput = document.getElementById("settings-prolink-virtual-player");
   const prefixInput = document.getElementById("settings-default-mix-prefix");
+  const recordingFormatInput = document.getElementById("settings-recording-format");
   const mergeGapInput = document.getElementById("settings-track-gap");
   const autoMeteringInput = document.getElementById("settings-auto-metering");
   const confirmDeleteInput = document.getElementById("settings-confirm-delete");
@@ -1059,6 +1185,7 @@ async function saveSettings() {
     !prolinkCh3Input ||
     !prolinkVirtualPlayerInput ||
     !prefixInput ||
+    !recordingFormatInput ||
     !mergeGapInput ||
     !autoMeteringInput ||
     !confirmDeleteInput ||
@@ -1083,6 +1210,7 @@ async function saveSettings() {
         prolink_metadata_enabled: prolinkMetadataEnabledInput.checked,
         prolink_virtual_player_number: Number(prolinkVirtualPlayerInput.value),
         default_mix_prefix: prefixInput.value.trim(),
+        recording_format: recordingFormatInput.value,
         track_id_merge_gap_seconds: Number(mergeGapInput.value),
         auto_enable_metering: autoMeteringInput.checked,
         theme: themeInput.value,
@@ -1122,6 +1250,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("metering-toggle-button").addEventListener("click", toggleMetering);
     setupDiscardModal();
     setupDefaultMixPlaceholder();
+    document.getElementById("recording-format").addEventListener("change", updateRecordingFormatState);
     loadSettingsPayload()
       .catch(() => null)
       .then(async () => {
@@ -1138,6 +1267,8 @@ document.addEventListener("DOMContentLoaded", () => {
   if (page === "recordings") {
     loadSettingsPayload().catch(() => null).finally(() => {
       loadRecordings();
+      loadStorage();
+      window.setInterval(loadStorage, 30000);
     });
     // TODO: Add Nextcloud sync status/action controls here when that feature exists.
   }

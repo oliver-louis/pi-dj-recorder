@@ -168,9 +168,20 @@
                 <button class="help-trigger" type="button" aria-label="About default mix prefix" aria-expanded="false">
                   <span aria-hidden="true">i</span>
                 </button>
-                <span class="help-bubble" role="tooltip">Used when you leave the mix name blank. For example, a prefix of vinyl gives filenames like vinyl_2026-05-26_21-30-00.wav.</span>
+                <span class="help-bubble" role="tooltip">Used when you leave the mix name blank. For example, a prefix of vinyl gives filenames like vinyl_2026-05-26_21-30-00.flac.</span>
               </span>
               <input id="settings-default-mix-prefix" type="text" maxlength="120" placeholder="mix">
+            </label>
+
+            <label class="field">
+              <span class="field-header">
+                <span>Default recording format</span>
+                <button class="help-trigger" type="button" aria-label="About default recording format" aria-expanded="false">
+                  <span aria-hidden="true">i</span>
+                </button>
+                <span class="help-bubble" role="tooltip">Preselects the format on the Record page. WAV and FLAC are lossless; MP3 uses 320 kbps.</span>
+              </span>
+              <select id="settings-recording-format"></select>
             </label>
 
             <label class="field">

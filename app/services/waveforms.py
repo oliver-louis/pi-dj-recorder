@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,15 +11,16 @@ from app.services.recordings_store import RecordingsStore
 
 
 class WaveformService:
-    def __init__(self, ffmpeg_bin: str, store: RecordingsStore) -> None:
+    def __init__(self, ffmpeg_bin: str, ffprobe_bin: str, store: RecordingsStore) -> None:
         self.ffmpeg_bin = ffmpeg_bin
+        self.ffprobe_bin = ffprobe_bin
         self.store = store
 
     def waveform_for_recording(self, filename: str) -> WaveformData:
         path = self.store.path_for_recording(filename)
         stat = path.stat()
         signature = self.store.waveform_signature(stat)
-        target_samples = self.target_waveform_samples(self.wav_duration_seconds(path))
+        target_samples = self.target_waveform_samples(self.recording_duration_seconds(path))
         cache_path = self.store.waveform_cache_path(filename)
         cached = self.store.read_waveform_cache(cache_path)
         if cached is not None and cached.get("signature") == signature and cached.get("target_samples") == target_samples:
@@ -31,7 +31,7 @@ class WaveformService:
                 generated_at=str(cached["generated_at"]),
             )
 
-        duration_seconds = self.wav_duration_seconds(path)
+        duration_seconds = self.recording_duration_seconds(path)
         rms_db_values = self.extract_waveform_rms_db(path)
         if not rms_db_values:
             raise WaveformGenerationError(f"No waveform data could be extracted from {path.name}.")
@@ -69,15 +69,36 @@ class WaveformService:
             "-",
         ]
 
-    def wav_duration_seconds(self, path: Path) -> float:
+    def recording_duration_seconds(self, path: Path) -> float:
+        command = [
+            self.ffprobe_bin,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
         try:
-            with wave.open(str(path), "rb") as handle:
-                frame_rate = handle.getframerate()
-                if frame_rate <= 0:
-                    return 0.0
-                return handle.getnframes() / frame_rate
-        except (wave.Error, OSError) as exc:
-            raise WaveformGenerationError(f"Could not read WAV duration for {path.name}.") from exc
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            raise WaveformGenerationError(f"Could not read duration for {path.name}.") from exc
+        try:
+            duration = float((result.stdout or "").strip())
+        except ValueError as exc:
+            raise WaveformGenerationError(f"Could not read duration for {path.name}.") from exc
+        if result.returncode != 0 or duration < 0:
+            raise WaveformGenerationError(f"Could not read duration for {path.name}.")
+        return duration
 
     def extract_waveform_rms_db(self, path: Path) -> list[float]:
         command = self.build_waveform_command(path)

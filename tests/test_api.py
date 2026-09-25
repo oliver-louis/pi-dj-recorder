@@ -1,4 +1,5 @@
 import subprocess
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -7,10 +8,19 @@ from app.recorder import Recorder, WaveformGenerationError
 from tests.test_recorder import FakeProcess
 
 
+def available_recording_formats():
+    return [
+        {"id": "wav", "label": "WAV — 24-bit lossless", "available": True, "reason": None},
+        {"id": "flac", "label": "FLAC — 24-bit lossless", "available": True, "reason": None},
+        {"id": "mp3", "label": "MP3 — 320 kbps", "available": True, "reason": None},
+    ]
+
+
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: FakeProcess(command, **kwargs))
     original = main.recorder
     main.recorder = Recorder(tmp_path, device_check_enabled=False)
+    monkeypatch.setattr(main.recorder, "recording_format_capabilities", available_recording_formats)
     main.recorder.start_midi_daemon()
     client = TestClient(main.app)
     return client, original
@@ -124,6 +134,49 @@ def test_recordings_list_and_download(tmp_path, monkeypatch):
     assert onair.content == b"{}\n"
 
 
+def test_storage_endpoint_returns_filesystem_and_recordings_usage(tmp_path, monkeypatch):
+    (tmp_path / "mix_2026-05-06_01-00-00.wav").write_bytes(b"wav")
+    (tmp_path / "mix_2026-05-06_01-00-00.onair.jsonl").write_bytes(b"onair")
+    monkeypatch.setattr(
+        "app.services.recordings_store.shutil.disk_usage",
+        lambda path: SimpleNamespace(total=10_000, used=9_001, free=999),
+    )
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.get("/api/storage")
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "recordings_path": str(tmp_path.resolve()),
+        "total_bytes": 10_000,
+        "used_bytes": 9_001,
+        "free_bytes": 999,
+        "recordings_bytes": 8,
+        "used_percent": 90.01,
+        "free_percent": 9.99,
+        "low_space": True,
+    }
+
+
+def test_storage_endpoint_failure_does_not_break_recordings_list(tmp_path, monkeypatch):
+    filename = "mix_2026-05-06_01-00-00.wav"
+    (tmp_path / filename).write_bytes(b"wav")
+    client, original = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.recorder, "storage_info", lambda: (_ for _ in ()).throw(PermissionError()))
+    try:
+        storage = client.get("/api/storage")
+        recordings = client.get("/api/recordings")
+    finally:
+        main.recorder = original
+
+    assert storage.status_code == 503
+    assert storage.json() == {"detail": "Storage information is unavailable."}
+    assert recordings.status_code == 200
+    assert recordings.json()["recordings"][0]["name"] == filename
+
+
 def test_start_accepts_custom_name(tmp_path, monkeypatch):
     client, original = make_client(tmp_path, monkeypatch)
     try:
@@ -133,6 +186,86 @@ def test_start_accepts_custom_name(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["current_filename"].startswith("balcony-set_")
+
+
+def test_start_accepts_recording_format_override(tmp_path, monkeypatch):
+    processes = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, **kwargs: processes.append(FakeProcess(command, **kwargs)) or processes[-1],
+    )
+    original = main.recorder
+    main.recorder = Recorder(tmp_path, device_check_enabled=False)
+    monkeypatch.setattr(main.recorder, "recording_format_capabilities", available_recording_formats)
+    main.recorder.start_midi_daemon()
+    client = TestClient(main.app)
+    try:
+        response = client.post(
+            "/api/recordings/start",
+            json={"mix_name": "Compressed Set", "recording_format": "mp3"},
+        )
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 200
+    assert response.json()["current_filename"].startswith("compressed-set_")
+    assert response.json()["current_filename"].endswith(".mp3")
+    recording_process = next(process for process in processes if process.command[0] == "ffmpeg" and "-progress" in process.command)
+    assert ["-c:a", "libmp3lame", "-b:a", "320k"] == recording_process.command[-5:-1]
+
+
+def test_start_rejects_invalid_recording_format(tmp_path, monkeypatch):
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        response = client.post("/api/recordings/start", json={"recording_format": "aac"})
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 422
+
+
+def test_start_reports_unavailable_recording_encoder(tmp_path, monkeypatch):
+    client, original = make_client(tmp_path, monkeypatch)
+    capabilities = available_recording_formats()
+    capabilities[2] = {
+        **capabilities[2],
+        "available": False,
+        "reason": "FFmpeg encoder 'libmp3lame' is not available.",
+    }
+    monkeypatch.setattr(main.recorder, "recording_format_capabilities", lambda: capabilities)
+    try:
+        response = client.post("/api/recordings/start", json={"recording_format": "mp3"})
+    finally:
+        main.recorder = original
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "FFmpeg encoder 'libmp3lame' is not available."
+
+
+def test_mixed_format_playback_uses_correct_media_types(tmp_path, monkeypatch):
+    filenames = {
+        "mix_2026-05-06_01-00-00.wav": "audio/wav",
+        "mix_2026-05-06_02-00-00.flac": "audio/flac",
+        "mix_2026-05-06_03-00-00.mp3": "audio/mpeg",
+    }
+    for filename in filenames:
+        (tmp_path / filename).write_bytes(b"audio")
+    client, original = make_client(tmp_path, monkeypatch)
+    try:
+        listed = client.get("/api/recordings")
+        played = {
+            filename: client.get(f"/api/recordings/{filename}/play")
+            for filename in filenames
+        }
+    finally:
+        main.recorder = original
+
+    assert listed.status_code == 200
+    assert {item["format"] for item in listed.json()["recordings"]} == {"wav", "flac", "mp3"}
+    for filename, media_type in filenames.items():
+        assert played[filename].status_code == 200
+        assert played[filename].headers["content-type"].startswith(media_type)
 
 
 def test_start_reports_unavailable_device(tmp_path, monkeypatch):
@@ -282,11 +415,14 @@ def test_settings_page_and_endpoint(tmp_path, monkeypatch):
     assert payload["settings"]["prolink_metadata_enabled"] is True
     assert payload["settings"]["prolink_virtual_player_number"] == 4
     assert payload["settings"]["default_mix_prefix"] == "mix"
+    assert payload["settings"]["recording_format"] == "wav"
     assert payload["settings"]["track_id_merge_gap_seconds"] == 10.0
     assert payload["settings"]["auto_enable_metering"] is False
     assert payload["settings"]["theme"] == "dark"
     assert payload["settings"]["confirm_delete_recordings"] is True
     assert payload["settings"]["stop_discard_countdown_seconds"] == 3
+    assert [item["id"] for item in payload["recording_formats"]] == ["wav", "flac", "mp3"]
+    assert all(item["available"] for item in payload["recording_formats"])
     assert payload["midi_devices"][0]["id"] == "24:0"
     assert payload["audio_devices"][0]["id"] == "plughw:2,0"
     assert payload["debug"]["config_path"]
@@ -323,6 +459,7 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
                 "prolink_metadata_enabled": False,
                 "prolink_virtual_player_number": 4,
                 "default_mix_prefix": "vinyl",
+                "recording_format": "flac",
                 "track_id_merge_gap_seconds": 5,
                 "auto_enable_metering": True,
                 "theme": "light",
@@ -343,6 +480,7 @@ def test_update_settings_endpoint(tmp_path, monkeypatch):
     assert response.json()["settings"]["prolink_metadata_enabled"] is False
     assert response.json()["settings"]["prolink_virtual_player_number"] == 4
     assert response.json()["settings"]["default_mix_prefix"] == "vinyl"
+    assert response.json()["settings"]["recording_format"] == "flac"
     assert response.json()["settings"]["theme"] == "light"
 
 

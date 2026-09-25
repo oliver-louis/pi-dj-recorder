@@ -260,6 +260,25 @@ dd {
   font-weight: 700;
 }
 
+.recording-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 1fr);
+  gap: 12px;
+  max-width: 700px;
+}
+
+.recording-options .field {
+  max-width: none;
+}
+
+.field-message {
+  min-height: 1.2em;
+  margin: -8px 0 0;
+  color: var(--red);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .field-header {
   position: relative;
   display: inline-flex;
@@ -863,6 +882,82 @@ button:disabled {
   gap: 20px;
 }
 
+.storage-summary {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--surface-soft);
+}
+
+.storage-summary.low {
+  border-color: rgba(217, 74, 88, 0.75);
+}
+
+.storage-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.storage-path,
+.storage-warning {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.storage-warning {
+  color: var(--red);
+  font-weight: 800;
+  text-align: right;
+}
+
+.storage-progress {
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.storage-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 180ms ease;
+}
+
+.storage-summary.low .storage-progress-fill {
+  background: var(--red);
+}
+
+.storage-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.storage-metrics div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
+}
+
+.storage-metrics dd {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .recording-item {
   display: grid;
   gap: 14px;
@@ -1101,6 +1196,14 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .recording-options {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .recording-head {
     align-items: start;
     flex-direction: column;
@@ -1229,6 +1332,29 @@ button:disabled {
     border-radius: 0;
     padding: 10px 12px;
     box-shadow: none;
+  }
+
+  .storage-summary {
+    gap: 10px;
+    margin-bottom: 14px;
+    padding: 12px;
+  }
+
+  .storage-head {
+    display: grid;
+    gap: 2px;
+  }
+
+  .storage-warning {
+    text-align: left;
+  }
+
+  .storage-metrics {
+    gap: 7px;
+  }
+
+  .storage-metrics div {
+    padding: 9px;
   }
 
   .recorder-panel {

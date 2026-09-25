@@ -38,7 +38,7 @@ class TrackIdExporter:
             )
             for session in sessions
         ]
-        export_name = f"{filename[:-4]}.track-ids.json"
+        export_name = f"{Path(filename).stem}.track-ids.json"
         return export_name, json.dumps(export_payload, indent=2).encode("utf-8")
 
     def track_id_payload_for_session(

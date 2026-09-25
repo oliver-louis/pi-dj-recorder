@@ -7,6 +7,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.recorder import AlreadyRecordingError, DeviceUnavailableError, NotMeteringError, NotRecordingError, Recorder, RecorderError
 from app.recorder import TrackIdExportError, WaveformGenerationError
+from app.services.recording_formats import recording_format_for_filename
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -28,6 +30,7 @@ PROLINK_RESTART_TIMEOUT_SECONDS = float(os.getenv("PI_RECORDER_PROLINK_RESTART_T
 recorder = Recorder(
     Path(os.getenv("PI_RECORDER_RECORDINGS_DIR", "/home/copper/mixes")),
     input_device=os.getenv("PI_RECORDER_INPUT_DEVICE", "plughw:X2,0"),
+    ffprobe_bin=os.getenv("PI_RECORDER_FFPROBE_BIN", "ffprobe"),
     midi_port=os.getenv("PI_RECORDER_MIDI_PORT", "16:0"),
     midi_port_name_hint=os.getenv("PI_RECORDER_MIDI_PORT_NAME_HINT", "XONE:96"),
     config_path=Path(os.getenv("PI_RECORDER_CONFIG_PATH", "config.json")),
@@ -40,6 +43,7 @@ recorder = Recorder(
 
 class StartRecordingRequest(BaseModel):
     mix_name: str | None = Field(default=None, max_length=120)
+    recording_format: Literal["wav", "flac", "mp3"] | None = None
 
 
 class RenameRecordingRequest(BaseModel):
@@ -56,6 +60,7 @@ class UpdateSettingsRequest(BaseModel):
     prolink_metadata_enabled: bool = True
     prolink_virtual_player_number: int = Field(default=4, ge=1, le=4)
     default_mix_prefix: str = Field(min_length=1, max_length=120)
+    recording_format: Literal["wav", "flac", "mp3"] = "wav"
     track_id_merge_gap_seconds: float = Field(ge=0, le=30)
     auto_enable_metering: bool
     theme: str = Field(pattern="^(dark|light)$")
@@ -114,6 +119,7 @@ async def update_settings(request: UpdateSettingsRequest) -> dict[str, object]:
             prolink_metadata_enabled=request.prolink_metadata_enabled,
             prolink_virtual_player_number=request.prolink_virtual_player_number,
             default_mix_prefix=request.default_mix_prefix,
+            recording_format=request.recording_format,
             track_id_merge_gap_seconds=request.track_id_merge_gap_seconds,
             auto_enable_metering=request.auto_enable_metering,
             theme=request.theme,
@@ -189,7 +195,8 @@ async def websocket_midi_state(websocket: WebSocket) -> None:
 async def start_recording(request: StartRecordingRequest | None = None) -> dict[str, object]:
     try:
         mix_name = request.mix_name if request else None
-        status_data = await asyncio.to_thread(recorder.start, mix_name)
+        recording_format = request.recording_format if request else None
+        status_data = await asyncio.to_thread(recorder.start, mix_name, recording_format)
     except AlreadyRecordingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DeviceUnavailableError as exc:
@@ -239,6 +246,15 @@ async def list_recordings() -> dict[str, list[dict[str, object]]]:
     return {"recordings": [asdict(file) for file in files]}
 
 
+@app.get("/api/storage")
+async def storage_info() -> dict[str, object]:
+    try:
+        info = await asyncio.to_thread(recorder.storage_info)
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Storage information is unavailable.") from exc
+    return asdict(info)
+
+
 @app.patch("/api/recordings/{filename}")
 async def rename_recording(filename: str, request: RenameRecordingRequest) -> dict[str, object]:
     try:
@@ -267,13 +283,13 @@ async def delete_recording(filename: str) -> None:
 @app.get("/api/recordings/{filename}/download")
 async def download_recording(filename: str) -> FileResponse:
     path = await _safe_recording_path(filename)
-    return FileResponse(path, media_type="audio/wav", filename=path.name)
+    return FileResponse(path, media_type=recording_format_for_filename(path).media_type, filename=path.name)
 
 
 @app.get("/api/recordings/{filename}/play")
 async def play_recording(filename: str) -> FileResponse:
     path = await _safe_recording_path(filename)
-    return FileResponse(path, media_type="audio/wav")
+    return FileResponse(path, media_type=recording_format_for_filename(path).media_type)
 
 
 @app.get("/api/recordings/{filename}/midi-download")
